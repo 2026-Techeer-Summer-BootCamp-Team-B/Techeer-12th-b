@@ -51,7 +51,7 @@
 
 **협업 도구**
 ```
-Git / GitHub / Notion / Discord
+Git / GitHub / Notion / Slack / Zoom
 ```
 
 <br>
