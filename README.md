@@ -134,10 +134,10 @@ Git / GitHub / Notion / Slack / Zoom
 | 이름 | 역할 | GitHub |
 |------|------|--------|
 | 이용욱 | 팀장 | [@yongwook0001-hub](https://github.com/yongwook0001-hub) |
-| 서동영 | - | [@](https://github.com/) |
-| 심다움 | - | [@](https://github.com/) |
-| 윤재영 | - | [@](https://github.com/) |
-| 하지환 | - | [@](https://github.com/) |
+| 서동영 | 프론트 | [@](https://github.com/) |
+| 심다움 | 백엔드 | [@](https://github.com/) |
+| 윤재영 | 백엔드 | [@](https://github.com/) |
+| 하지환 | 백엔드 | [@](https://github.com/) |
 
 <br>
 
