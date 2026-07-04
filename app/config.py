@@ -11,6 +11,7 @@ class Settings(BaseSettings):
 
     rate_limit_window_seconds: float = 10.0
     rate_limit_max_requests: int = 50
+    blacklist_path: str = "app/storage/blacklist.json"
 
 
 settings = Settings()

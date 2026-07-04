@@ -19,8 +19,8 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from app.api import blacklist
 from app.config import settings
-from app.storage import blacklist_store
 
 # 알려진 해킹 툴 / 스캐너의 User-Agent 키워드 (필요시 계속 추가)
 BAD_BOT_USER_AGENTS = ["sqlmap", "nikto", "nmap", "masscan", "acunetix", "curl/7.0"]
@@ -56,7 +56,7 @@ class GatewayMiddleware(BaseHTTPMiddleware):
         user_agent = request.headers.get("user-agent", "")
 
         # 1) 블랙리스트 확인 — 이미 차단된 IP는 바로 튕겨냄
-        if blacklist_store.is_blocked(client_ip):
+        if blacklist.is_blocked(client_ip):
             return JSONResponse(status_code=403, content={"detail": "Access denied"})
 
         # 2) Bad Bot 차단
@@ -67,7 +67,7 @@ class GatewayMiddleware(BaseHTTPMiddleware):
         if _is_rate_limited(client_ip):
             from app.models.schemas import IPBlacklistEntry  # 순환 import 방지용 지연 임포트
 
-            blacklist_store.add_or_update(
+            blacklist.add_or_update(
                 IPBlacklistEntry(ip=client_ip, reason="rate_limit_exceeded")
             )
             return JSONResponse(status_code=429, content={"detail": "Too many requests"})
