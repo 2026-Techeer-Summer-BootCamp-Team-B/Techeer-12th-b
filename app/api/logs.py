@@ -1,5 +1,5 @@
 """
-담당: 윤재영 (중앙 로깅) — 대시보드(서동영)가 호출하는 API
+담당: 심다움 (로그 마스터) — 대시보드(서동영)가 호출하는 API
 """
 from datetime import datetime
 from typing import Optional

@@ -1,5 +1,5 @@
 """
-담당: 서동영 (대시보드) + 윤재영 (알림 트리거)
+담당: 서동영 (대시보드) + 심다움 (알림 트리거 - 로그 마스터)
 
 대시보드가 이 WebSocket에 연결해두면, CRITICAL 등급 공격이 탐지될 때마다
 서버가 즉시 push 해준다. (노션 API 명세의 WS /ws/alerts 구현체)
@@ -12,7 +12,7 @@ from typing import List
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 router = APIRouter(tags=["ws"])
-
+bl
 
 class ConnectionManager:
     def __init__(self) -> None:

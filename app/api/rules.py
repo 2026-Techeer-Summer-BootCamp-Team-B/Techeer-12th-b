@@ -1,5 +1,5 @@
 """
-담당: 심다움 / 하지환 / 윤재영
+담당: 윤재영 (서버·DB 룰) / 심다움 (클라이언트 룰)
 """
 from fastapi import APIRouter
 

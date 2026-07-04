@@ -1,5 +1,5 @@
 """
-담당: 윤재영 (로그 집계) — 서동영(대시보드)의 차트/카드가 이 API들을 바로 사용
+담당: 심다움 (로그 집계) — 서동영(대시보드)의 차트/카드가 이 API들을 바로 사용
 """
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta

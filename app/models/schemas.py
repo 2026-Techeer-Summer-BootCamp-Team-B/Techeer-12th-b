@@ -29,8 +29,8 @@ class RiskLevel(str, Enum):
 
 class AttackLog(BaseModel):
     """
-    담당: 윤재영 (중앙 로깅)
-    탐지 엔진(심다움/하지환/윤재영 각자 담당 유형)이 공격을 잡아내면
+    담당: 심다움 (로그 마스터)
+    탐지 엔진(윤재영: 서버·DB / 심다움: 클라이언트)이 공격을 잡아내면
     이 형태로 만들어서 log_store에 저장한다.
     """
     id: str = Field(default_factory=lambda: str(uuid4()))
@@ -59,7 +59,7 @@ class IPBlacklistEntry(BaseModel):
 
 class DetectionRule(BaseModel):
     """
-    담당: 심다움 / 하지환 / 윤재영 (각자 담당 공격 유형의 룰 등록)
+    담당: 윤재영 (서버·DB 룰) / 심다움 (클라이언트 룰)
     정규식을 코드에 하드코딩하지 않고 데이터로 관리해서
     코드 수정 없이 룰만 추가/비활성화할 수 있게 함.
     """

@@ -96,15 +96,15 @@ Git / GitHub / Notion / Discord
 
 ## 👥 팀원 소개 & 역할분담
 
-**테커 12기 Team-F**
+**테커 12기 Team-B**
 
-| 이름 | 역할 | 담당 업무 |
-|------|------|-----------|
-| 이용욱 | 총괄 / 게이트웨이 & 트래픽 컨트롤러 | 전체 아키텍처 총괄, 팀 조율, 웹 서버 뼈대 구축, Bad Bot 차단, Rate Limiting/Brute Force 차단, 에러 마스킹 |
-| 서동영 | 프론트엔드 관제 대시보드 | 보안 모니터링 대시보드 UI/UX, 실시간 경고창(Alert), 공격 통계 표/그래프 |
-| 심다움 | 데이터 정규화 & 우회 방어 | 인코딩 디코딩, 대소문자 통일, 파라미터 오염(HPP) 방어 |
-| 하지환 | 서버 & DB 보안 분석관 | SQL Injection, OS 커맨드 인젝션, 경로 탐색(Path Traversal) 방어 |
-| 윤재영 | 클라이언트 보안 분석관 & 로그 마스터 | XSS 방어, 악성 파일 업로드 차단, 중앙 로깅 저장소 운영 및 API 제공 |
+| 이름 | 역할 | 담당 업무 | 담당 파일 |
+|------|------|-----------|-----------|
+| 이용욱 | 총괄 / 게이트웨이 & 트래픽 컨트롤러 | 전체 아키텍처 총괄, 팀 조율, 웹 서버 뼈대 구축, Bad Bot 차단, Rate Limiting/Brute Force 차단, 에러 마스킹 | `main.py`, `app/config.py`, `app/middleware/gateway.py`, `app/api/blacklist.py`, `app/proxy/proxy.py`(예정) |
+| 서동영 | 프론트엔드 관제 대시보드 | 보안 모니터링 대시보드 UI/UX, 실시간 경고창(Alert), 공격 통계 표/그래프 | `frontend/`(예정), `app/api/ws.py`(프론트 연동) |
+| 하지환 | 데이터 정규화 & 우회 방어 | 인코딩 디코딩, 대소문자 통일, 파라미터 오염(HPP) 방어 | `app/middleware/decoder.py` |
+| 윤재영 | 서버 & DB 보안 분석관 | SQL Injection, OS 커맨드 인젝션, 경로 탐색(Path Traversal) 방어 | `app/detection/signatures.py`(SQLi/OS Command Injection/Path Traversal), `app/detection/engine.py`(서버·DB 탐지 부분), `app/api/rules.py`, `app/storage/rules_store.py`(서버·DB 룰 공동) |
+| 심다움 | 클라이언트 보안 분석관 & 로그 마스터 | XSS 방어, 악성 파일 업로드 차단, 중앙 로깅 저장소 운영 및 API 제공 | `app/detection/signatures.py`(XSS/파일 업로드), `app/detection/engine.py`(클라이언트 탐지 부분), `app/api/logs.py`, `app/api/stats.py`, `app/api/ws.py`(알림 트리거), `app/storage/log_store.py`, `app/api/rules.py`, `app/storage/rules_store.py`(클라이언트 룰 공동) |
 
 <br>
 

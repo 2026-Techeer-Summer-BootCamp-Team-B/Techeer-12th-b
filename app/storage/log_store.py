@@ -1,5 +1,5 @@
 """
-담당: 윤재영 (중앙 로깅)
+담당: 심다움 (로그 마스터)
 
 AttackLog 저장소. 초기 뼈대는 인메모리 리스트로 구현.
 app/api/logs.py가 이 모듈의 get_logs / get_log_by_id를 호출한다.
