@@ -5,23 +5,28 @@
 1) 블랙리스트 IP 즉시 차단
 2) Rate Limiting (짧은 시간에 너무 많은 요청 차단)
 3) Bad Bot 차단 (알려진 해킹 툴 User-Agent 차단)
-4) Brute Force 탐지 (로그인 엔드포인트에서의 반복된 인증 실패 추적)
+4) Brute Force 탐지 — 3단계로 방어
+   4-1) IP 기준: 같은 IP의 반복된 로그인 실패
+   4-2) 계정 기준: IP를 바꿔가며 같은 계정만 노리는 경우 (IP 로테이션 대응)
+   4-3) 시스템 전체 기준: IP/계정 다 분산시켜서 도는 대규모 공격 조짐 감지 (경보만, 자동차단 X)
 5) 에러 마스킹 (서버 내부 에러 메시지가 그대로 노출되지 않도록)
 
 FastAPI의 미들웨어 체인에서 가장 먼저 실행되어,
 여기서 걸러지지 않은 요청만 디코더(app/middleware/decoder.py)와
 탐지 엔진(app/detection/engine.py)으로 넘어간다.
 """
+import json
 import time
 from collections import defaultdict, deque
-from typing import Deque, Dict
+from typing import Deque, Dict, Optional
+from urllib.parse import parse_qs
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
-from app.storage import blacklist_store
+from app.storage import account_lockout_store, blacklist_store
 
 # 알려진 해킹 툴 / 스캐너의 User-Agent 키워드 (필요시 계속 추가)
 BAD_BOT_USER_AGENTS = ["sqlmap", "nikto", "nmap", "masscan", "acunetix", "curl/7.0"]
@@ -29,17 +34,51 @@ BAD_BOT_USER_AGENTS = ["sqlmap", "nikto", "nmap", "masscan", "acunetix", "curl/7
 # 로그인/인증 관련 엔드포인트로 간주할 경로 키워드
 LOGIN_PATH_KEYWORDS = ["login", "signin", "sign-in", "auth"]
 
+# 로그인 요청 body에서 계정 식별자로 인식할 필드 이름 후보
+LOGIN_IDENTIFIER_FIELDS = ["email", "username", "user", "id", "account"]
+
 # 인증 실패로 간주할 응답 상태코드
 LOGIN_FAILURE_STATUS_CODES = {401, 403}
+
+# 계정 잠금 지속 시간 (초) — 임계치 초과 시 이 계정으로의 로그인 시도 자체를 게이트웨이에서 차단
+ACCOUNT_LOCKOUT_DURATION_SECONDS = 300
+
+# 시스템 전체 스파이크로 판단할 임계치 (1-1의 "레벨 1: 규칙 기반 이상탐지"에 해당)
+# IP/계정별로는 임계치 밑이어도, 시스템 전체적으로 로그인 실패가 이 수치를 넘으면
+# "분산형 브루트포스(자격증명 스터핑 등) 조짐"으로 보고 경보만 남긴다 (자동 차단은 하지 않음 — 오탐 방지)
+SYSTEM_WIDE_FAILURE_THRESHOLD = 50
+SYSTEM_WIDE_WINDOW_SECONDS = 60
 
 # IP별 최근 요청 시각을 저장하는 메모리 저장소 (Rate Limiting용)
 # 실제 운영에서는 여러 서버 인스턴스가 있을 수 있으므로 Redis 등으로 교체 권장
 _request_history: Dict[str, Deque[float]] = defaultdict(deque)
 
-# IP별 최근 로그인 실패 시각을 저장하는 메모리 저장소 (Brute Force용)
-# Rate Limiting과 별도로 관리해야, "요청 수는 적은데 전부 로그인 실패인" 경우를
-# "일반 트래픽이 많은" 경우와 구분해서 판단할 수 있다.
-_login_failure_history: Dict[str, Deque[float]] = defaultdict(deque)
+# IP별 최근 로그인 실패 시각 (4-1: IP 기준 브루트포스)
+_login_failure_by_ip: Dict[str, Deque[float]] = defaultdict(deque)
+
+# 계정 식별자별 최근 로그인 실패 시각 (4-2: 계정 기준 브루트포스, IP 로테이션 대응)
+_login_failure_by_account: Dict[str, Deque[float]] = defaultdict(deque)
+
+# 시스템 전체 로그인 실패 시각 (4-3: 분산형 공격 스파이크 감지용)
+_system_wide_login_failures: Deque[float] = deque()
+
+
+def get_client_ip(request: Request) -> str:
+    """
+    실제 클라이언트 IP를 판단한다.
+    배포 아키텍처상 Traefik 같은 리버스 프록시가 앞단에 있으면
+    request.client.host는 프록시 자신의 IP가 돼버려서 모든 요청이 같은 IP로 잡힌다.
+    이 경우 프록시가 X-Forwarded-For 헤더에 원본 클라이언트 IP를 남겨주므로 그걸 우선 사용한다.
+
+    주의: X-Forwarded-For는 클라이언트가 임의로 위조해서 보낼 수도 있는 헤더라서,
+    신뢰할 수 있는 리버스 프록시를 실제로 앞단에 두고 있을 때만 사용해야 한다
+    (그렇지 않으면 공격자가 이 헤더 값을 계속 바꿔서 IP 기반 차단을 그냥 우회할 수 있음).
+    """
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        # "client, proxy1, proxy2" 형태로 올 수 있어 맨 앞(원본 클라이언트)만 사용
+        return forwarded_for.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 
 def _is_rate_limited(ip: str) -> bool:
@@ -65,14 +104,36 @@ def is_login_endpoint(path: str) -> bool:
     return any(keyword in path_lower for keyword in LOGIN_PATH_KEYWORDS)
 
 
-def record_login_failure(ip: str) -> bool:
+def extract_login_identifier(body_bytes: bytes, content_type: str) -> Optional[str]:
     """
-    로그인 실패를 기록하고, 브루트포스 임계치를 넘었는지 반환한다.
-    Rate Limiting(_is_rate_limited)과 완전히 독립된 카운터를 사용한다 —
-    "전체 요청 수"가 아니라 "로그인 실패 횟수"만 정확히 세는 것이 핵심.
+    로그인 요청 body에서 계정 식별자(이메일/아이디)를 뽑아낸다.
+    JSON과 form-urlencoded 두 형식을 지원. 파싱 실패하면 None을 반환하고
+    이 경우 IP 기준 탐지(4-1)만으로 대응한다 — 계정 추출은 "있으면 더 좋은" 보강 계층.
     """
+    if not body_bytes:
+        return None
+
+    try:
+        if "application/json" in content_type:
+            data = json.loads(body_bytes.decode("utf-8", errors="ignore"))
+        elif "application/x-www-form-urlencoded" in content_type:
+            parsed = parse_qs(body_bytes.decode("utf-8", errors="ignore"))
+            data = {k: v[0] for k, v in parsed.items()}
+        else:
+            return None
+    except Exception:
+        return None
+
+    for field in LOGIN_IDENTIFIER_FIELDS:
+        if field in data and data[field]:
+            return str(data[field]).strip().lower()
+    return None
+
+
+def record_login_failure_by_ip(ip: str) -> bool:
+    """4-1: IP 기준. Rate Limiting과 완전히 독립된 카운터를 쓴다."""
     now = time.time()
-    history = _login_failure_history[ip]
+    history = _login_failure_by_ip[ip]
 
     while history and now - history[0] > settings.brute_force_window_seconds:
         history.popleft()
@@ -81,12 +142,41 @@ def record_login_failure(ip: str) -> bool:
     return len(history) >= settings.brute_force_max_failures
 
 
+def record_login_failure_by_account(identifier: str) -> bool:
+    """4-2: 계정 기준. IP가 계속 바뀌어도 같은 계정이 타겟이면 여기서 잡힌다."""
+    now = time.time()
+    history = _login_failure_by_account[identifier]
+
+    while history and now - history[0] > settings.brute_force_window_seconds:
+        history.popleft()
+
+    history.append(now)
+    return len(history) >= settings.brute_force_max_failures
+
+
+def record_system_wide_login_failure() -> bool:
+    """
+    4-3: 시스템 전체 기준 (레벨 1 이상탐지).
+    IP도 계정도 매번 다르게 분산시키는 대규모/분산형 공격은 4-1, 4-2 둘 다 못 잡는다.
+    "짧은 시간 안에 시스템 전체 로그인 실패가 비정상적으로 많다"는 것 자체를 신호로 본다.
+    다만 이건 특정 IP/계정을 지목할 수 없으므로 자동 차단은 하지 않고 경보(로그)만 남긴다 —
+    잘못 차단하면 정상 트래픽 전체에 영향을 줄 수 있기 때문.
+    """
+    now = time.time()
+    while _system_wide_login_failures and now - _system_wide_login_failures[0] > SYSTEM_WIDE_WINDOW_SECONDS:
+        _system_wide_login_failures.popleft()
+
+    _system_wide_login_failures.append(now)
+    return len(_system_wide_login_failures) >= SYSTEM_WIDE_FAILURE_THRESHOLD
+
+
 class GatewayMiddleware(BaseHTTPMiddleware):
     """main.py에서 app.add_middleware(GatewayMiddleware) 형태로 등록해서 사용."""
 
     async def dispatch(self, request: Request, call_next):
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = get_client_ip(request)
         user_agent = request.headers.get("user-agent", "")
+        is_login_request = is_login_endpoint(request.url.path)
 
         # 1) 블랙리스트 확인 — 이미 차단된 IP는 바로 튕겨냄
         if blacklist_store.is_blocked(client_ip):
@@ -105,20 +195,50 @@ class GatewayMiddleware(BaseHTTPMiddleware):
             )
             return JSONResponse(status_code=429, content={"detail": "Too many requests"})
 
-        # 4) 에러 마스킹 — 하위 로직에서 예외가 터져도 상세 스택트레이스를 노출하지 않음
+        # 4-2 사전 체크: 로그인 요청이면 body에서 계정을 먼저 뽑아서,
+        # 이미 잠긴 계정이면 실제 백엔드에 넘기지도 않고 여기서 바로 차단한다.
+        # (IP를 아무리 바꿔도 계정이 같으면 이 단계에서 막힘)
+        login_identifier: Optional[str] = None
+        if is_login_request and request.method in ("POST", "PUT"):
+            body_bytes = await request.body()  # Starlette가 내부적으로 캐싱해서 이후 재사용 가능
+            content_type = request.headers.get("content-type", "")
+            login_identifier = extract_login_identifier(body_bytes, content_type)
+
+            if login_identifier and account_lockout_store.is_locked(login_identifier):
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Account temporarily locked due to repeated failed login attempts"},
+                )
+
+        # 5) 에러 마스킹 — 하위 로직에서 예외가 터져도 상세 스택트레이스를 노출하지 않음
         try:
             response = await call_next(request)
 
-            # 5) Brute Force 탐지 — 로그인 엔드포인트에서 실패(401/403) 응답이
-            #    반복되는지 확인. 이건 요청을 실제로 처리한 "이후"에만 판단 가능하므로
-            #    call_next() 다음 시점에서 검사한다.
-            if is_login_endpoint(request.url.path) and response.status_code in LOGIN_FAILURE_STATUS_CODES:
-                if record_login_failure(client_ip):
-                    from app.models.schemas import IPBlacklistEntry  # 순환 import 방지용 지연 임포트
+            # 4) Brute Force 판정 — 로그인 엔드포인트에서 실패(401/403) 응답이 나온 경우에만 집계.
+            #    응답을 봐야 판단 가능하므로 call_next() 이후 시점에서 검사한다.
+            if is_login_request and response.status_code in LOGIN_FAILURE_STATUS_CODES:
+                from app.models.schemas import IPBlacklistEntry  # 순환 import 방지용 지연 임포트
 
+                # 4-1: IP 기준
+                if record_login_failure_by_ip(client_ip):
                     blacklist_store.add_or_update(
-                        IPBlacklistEntry(ip=client_ip, reason="brute_force_login")
+                        IPBlacklistEntry(ip=client_ip, reason="brute_force_login_ip")
                     )
+
+                # 4-2: 계정 기준 (IP 로테이션 대응) — 계정 식별을 못 했으면 건너뜀
+                if login_identifier and record_login_failure_by_account(login_identifier):
+                    account_lockout_store.lock_account(
+                        login_identifier,
+                        duration_seconds=ACCOUNT_LOCKOUT_DURATION_SECONDS,
+                        reason="brute_force_login_account",
+                    )
+
+                # 4-3: 시스템 전체 스파이크 (분산형 공격 조짐) — 자동 차단 없이 경보만
+                if record_system_wide_login_failure():
+                    # TODO: 지금은 print만 남기지만, 실제로는 AttackLog에 CRITICAL로 기록하거나
+                    # /ws/alerts로 대시보드에 즉시 알림을 보내는 방향으로 3주차에 확장 예정
+                    # (통계 기반 스코어링으로 발전시키면 지난번 얘기한 "레벨 2 이상탐지"로 이어짐)
+                    print("[Gateway][ALERT] 시스템 전체 로그인 실패 급증 감지 — 분산형 브루트포스 의심")
 
             return response
         except Exception:
