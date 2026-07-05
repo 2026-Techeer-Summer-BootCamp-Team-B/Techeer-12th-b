@@ -5,7 +5,8 @@
 1) 블랙리스트 IP 즉시 차단
 2) Rate Limiting (짧은 시간에 너무 많은 요청 차단)
 3) Bad Bot 차단 (알려진 해킹 툴 User-Agent 차단)
-4) 에러 마스킹 (서버 내부 에러 메시지가 그대로 노출되지 않도록)
+4) Brute Force 탐지 (로그인 엔드포인트에서의 반복된 인증 실패 추적)
+5) 에러 마스킹 (서버 내부 에러 메시지가 그대로 노출되지 않도록)
 
 FastAPI의 미들웨어 체인에서 가장 먼저 실행되어,
 여기서 걸러지지 않은 요청만 디코더(app/middleware/decoder.py)와
@@ -19,15 +20,26 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.api import blacklist
 from app.config import settings
+from app.storage import blacklist_store
 
 # 알려진 해킹 툴 / 스캐너의 User-Agent 키워드 (필요시 계속 추가)
 BAD_BOT_USER_AGENTS = ["sqlmap", "nikto", "nmap", "masscan", "acunetix", "curl/7.0"]
 
-# IP별 최근 요청 시각을 저장하는 메모리 저장소
+# 로그인/인증 관련 엔드포인트로 간주할 경로 키워드
+LOGIN_PATH_KEYWORDS = ["login", "signin", "sign-in", "auth"]
+
+# 인증 실패로 간주할 응답 상태코드
+LOGIN_FAILURE_STATUS_CODES = {401, 403}
+
+# IP별 최근 요청 시각을 저장하는 메모리 저장소 (Rate Limiting용)
 # 실제 운영에서는 여러 서버 인스턴스가 있을 수 있으므로 Redis 등으로 교체 권장
 _request_history: Dict[str, Deque[float]] = defaultdict(deque)
+
+# IP별 최근 로그인 실패 시각을 저장하는 메모리 저장소 (Brute Force용)
+# Rate Limiting과 별도로 관리해야, "요청 수는 적은데 전부 로그인 실패인" 경우를
+# "일반 트래픽이 많은" 경우와 구분해서 판단할 수 있다.
+_login_failure_history: Dict[str, Deque[float]] = defaultdict(deque)
 
 
 def _is_rate_limited(ip: str) -> bool:
@@ -35,7 +47,6 @@ def _is_rate_limited(ip: str) -> bool:
     now = time.time()
     history = _request_history[ip]
 
-    # 윈도우 밖으로 벗어난 오래된 기록은 제거
     while history and now - history[0] > settings.rate_limit_window_seconds:
         history.popleft()
 
@@ -48,6 +59,28 @@ def _is_bad_bot(user_agent: str) -> bool:
     return any(bad_ua in ua_lower for bad_ua in BAD_BOT_USER_AGENTS)
 
 
+def is_login_endpoint(path: str) -> bool:
+    """요청 경로가 로그인/인증 엔드포인트인지 판단."""
+    path_lower = path.lower()
+    return any(keyword in path_lower for keyword in LOGIN_PATH_KEYWORDS)
+
+
+def record_login_failure(ip: str) -> bool:
+    """
+    로그인 실패를 기록하고, 브루트포스 임계치를 넘었는지 반환한다.
+    Rate Limiting(_is_rate_limited)과 완전히 독립된 카운터를 사용한다 —
+    "전체 요청 수"가 아니라 "로그인 실패 횟수"만 정확히 세는 것이 핵심.
+    """
+    now = time.time()
+    history = _login_failure_history[ip]
+
+    while history and now - history[0] > settings.brute_force_window_seconds:
+        history.popleft()
+
+    history.append(now)
+    return len(history) >= settings.brute_force_max_failures
+
+
 class GatewayMiddleware(BaseHTTPMiddleware):
     """main.py에서 app.add_middleware(GatewayMiddleware) 형태로 등록해서 사용."""
 
@@ -56,7 +89,7 @@ class GatewayMiddleware(BaseHTTPMiddleware):
         user_agent = request.headers.get("user-agent", "")
 
         # 1) 블랙리스트 확인 — 이미 차단된 IP는 바로 튕겨냄
-        if blacklist.is_blocked(client_ip):
+        if blacklist_store.is_blocked(client_ip):
             return JSONResponse(status_code=403, content={"detail": "Access denied"})
 
         # 2) Bad Bot 차단
@@ -67,7 +100,7 @@ class GatewayMiddleware(BaseHTTPMiddleware):
         if _is_rate_limited(client_ip):
             from app.models.schemas import IPBlacklistEntry  # 순환 import 방지용 지연 임포트
 
-            blacklist.add_or_update(
+            blacklist_store.add_or_update(
                 IPBlacklistEntry(ip=client_ip, reason="rate_limit_exceeded")
             )
             return JSONResponse(status_code=429, content={"detail": "Too many requests"})
@@ -75,6 +108,18 @@ class GatewayMiddleware(BaseHTTPMiddleware):
         # 4) 에러 마스킹 — 하위 로직에서 예외가 터져도 상세 스택트레이스를 노출하지 않음
         try:
             response = await call_next(request)
+
+            # 5) Brute Force 탐지 — 로그인 엔드포인트에서 실패(401/403) 응답이
+            #    반복되는지 확인. 이건 요청을 실제로 처리한 "이후"에만 판단 가능하므로
+            #    call_next() 다음 시점에서 검사한다.
+            if is_login_endpoint(request.url.path) and response.status_code in LOGIN_FAILURE_STATUS_CODES:
+                if record_login_failure(client_ip):
+                    from app.models.schemas import IPBlacklistEntry  # 순환 import 방지용 지연 임포트
+
+                    blacklist_store.add_or_update(
+                        IPBlacklistEntry(ip=client_ip, reason="brute_force_login")
+                    )
+
             return response
         except Exception:
             # 실제 에러는 서버 로그에만 남기고(print는 예시일 뿐, 실제로는 logging 모듈 사용 권장)
