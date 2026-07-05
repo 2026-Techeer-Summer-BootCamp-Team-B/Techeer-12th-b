@@ -12,7 +12,7 @@ from typing import List
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 router = APIRouter(tags=["ws"])
-bl
+
 
 class ConnectionManager:
     def __init__(self) -> None:
