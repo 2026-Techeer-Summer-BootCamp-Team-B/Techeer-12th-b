@@ -1,25 +1,60 @@
 """
-담당: 이용욱 — FastAPI 앱 엔트리포인트.
+실시간 침입 탐지 플랫폼 — FastAPI 진입점
 
-게이트웨이 미들웨어를 등록하고, 구현이 끝난 API 라우터만 연결한다.
-app/proxy/proxy.py는 아직 뼈대만 있으므로 구현이 끝나는 대로 연결할 것.
-(app/api/blacklist.py는 API 라우터가 아니라 블랙리스트 저장소 모듈)
+실행 방법:
+    uvicorn main:app --reload
+
+구조:
+    클라이언트 요청
+        -> GatewayMiddleware (이용욱: 블랙리스트/Rate Limit/Bad Bot/에러마스킹)
+        -> /proxy/{path} (이용욱: 디코더+탐지엔진 거쳐서 실제 서비스로 전달)
+        -> /api/logs, /api/stats, /api/blacklist, /api/rules (조회/관리 API)
+        -> /ws/alerts (대시보드 실시간 알림)
 """
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import logs, rules, stats, ws
+from app.api import blacklist, logs, rules, stats, ws
+from app.config import settings
 from app.middleware.gateway import GatewayMiddleware
+from app.proxy.proxy import router as proxy_router
 
-app = FastAPI(title="Security Blue")
+app = FastAPI(
+    title="실시간 침입 탐지 플랫폼",
+    description="동적 웹 요청 중 비정상 트래픽을 실시간으로 탐지·차단하고 SIEM 대시보드로 시각화",
+    version="0.1.0",
+)
 
+# 대시보드(프론트엔드)가 다른 포트/도메인에서 API를 호출할 수 있도록 허용.
+#
+# allow_origins는 반드시 화이트리스트(settings.allowed_origins, .env에서 설정)로 관리한다.
+# "*"(전체 허용)로 두면, 인증정보를 쓰는 API가 생겼을 때 아무 외부 사이트에서나
+# 우리 API를 대신 호출해서 사용자 데이터를 읽어갈 수 있는 CORS Misconfiguration 취약점이 된다.
+# (자세한 시나리오는 app/middleware/gateway.py의 check_cors_violation 주석 참고)
+#
+# 참고: 여기 CORSMiddleware는 "정상적인 브라우저 preflight 요청"을 처리해주는 표준 기능이고,
+# 화이트리스트에 없는 Origin이 악의적으로 계속 시도하는 것을 "탐지해서 로그로 남기는" 건
+# GatewayMiddleware의 check_cors_violation()이 담당한다 — 둘이 하는 일이 달라서 같이 필요하다.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 게이트웨이 미들웨어 등록 (모든 요청이 가장 먼저 여기를 통과)
 app.add_middleware(GatewayMiddleware)
 
+# 라우터 등록
+app.include_router(proxy_router)
 app.include_router(logs.router)
-app.include_router(rules.router)
 app.include_router(stats.router)
+app.include_router(blacklist.router)
+app.include_router(rules.router)
 app.include_router(ws.router)
 
 
 @app.get("/health")
 def health_check():
+    """서버가 살아있는지 확인용. 배포/모니터링 시스템에서 주기적으로 호출."""
     return {"status": "ok"}
