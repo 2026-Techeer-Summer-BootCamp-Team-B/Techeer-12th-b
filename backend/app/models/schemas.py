@@ -19,6 +19,7 @@ class AttackType(str, Enum):
     PATH_TRAVERSAL = "path_traversal"
     FILE_UPLOAD = "file_upload"
     BRUTE_FORCE = "brute_force"
+    CORS_ABUSE = "cors_abuse"
 
 
 class RiskLevel(str, Enum):
@@ -59,7 +60,7 @@ class IPBlacklistEntry(BaseModel):
 
 class DetectionRule(BaseModel):
     """
-    담당: 윤재영 (서버·DB 룰) / 심다움 (클라이언트 룰)
+    담당: 심다움 / 하지환 / 윤재영 (각자 담당 공격 유형의 룰 등록)
     정규식을 코드에 하드코딩하지 않고 데이터로 관리해서
     코드 수정 없이 룰만 추가/비활성화할 수 있게 함.
     """
