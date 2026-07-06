@@ -12,10 +12,23 @@ class Settings(BaseSettings):
     # 담당: 이용욱 (게이트웨이)
     # 정상 트래픽을 최종적으로 전달할 실제 서비스 주소
     target_service_url: str = "http://localhost:8080"
+    elasticsearch_url: str = "http://elasticsearch:9200"
 
     # Rate Limiting 설정 (담당: 이용욱)
     rate_limit_window_seconds: int = 60
     rate_limit_max_requests: int = 30
+
+    # app/config.py의 Settings 클래스 안에 아래 필드를 추가하세요.
+    # (기존 target_service_url, rate_limit_* 등 필드들 밑에 이어서 넣으면 됩니다)
+ 
+    # PostgreSQL 접속 정보 (담당: 이용욱)
+    # k8s 안에서는 서비스 이름(postgres)으로 접근 - docker-compose 로컬 실행 시에도 동일하게 동작하도록
+    # 서비스 이름을 그대로 씀 (k8s DNS가 이 이름을 postgres pod의 ClusterIP로 해석해줌)
+    database_url: str = "postgresql://ids_admin:devpassword123@postgres:5432/ids_platform"
+ 
+    # Redis 접속 정보 (담당: 이용욱)
+    redis_url: str = "redis://redis:6379/0"
+ 
 
     # Brute Force 탐지 설정 (담당: 이용욱 / 하지환)
     brute_force_max_failures: int = 5

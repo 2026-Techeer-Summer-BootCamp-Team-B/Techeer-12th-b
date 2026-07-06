@@ -14,10 +14,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import blacklist, logs, rules, stats, ws
+from app.api import allowlist, audit_logs, auth, blacklist, logs, rules, stats, targets, ws
 from app.config import settings
 from app.middleware.gateway import GatewayMiddleware
 from app.proxy.proxy import router as proxy_router
+from app.storage.es_client import ensure_index_exists
 
 app = FastAPI(
     title="실시간 침입 탐지 플랫폼",
@@ -25,6 +26,9 @@ app = FastAPI(
     version="0.1.0",
 )
 
+@app.on_event("startup")
+def on_startup():
+    ensure_index_exists()
 # 대시보드(프론트엔드)가 다른 포트/도메인에서 API를 호출할 수 있도록 허용.
 #
 # allow_origins는 반드시 화이트리스트(settings.allowed_origins, .env에서 설정)로 관리한다.
@@ -46,11 +50,15 @@ app.add_middleware(
 app.add_middleware(GatewayMiddleware)
 
 # 라우터 등록
-app.include_router(proxy_router)
+app.include_router(proxy_router, prefix="/proxy")
+app.include_router(auth.router)
 app.include_router(logs.router)
 app.include_router(stats.router)
 app.include_router(blacklist.router)
 app.include_router(rules.router)
+app.include_router(targets.router)
+app.include_router(allowlist.router)
+app.include_router(audit_logs.router)
 app.include_router(ws.router)
 
 

@@ -11,15 +11,34 @@ from pydantic import BaseModel, Field
 
 
 class AttackType(str, Enum):
-    """공격 유형. 새 탐지 로직을 추가하면 여기에도 반드시 추가할 것."""
+    """공격 유형. 새 탐지 로직을 추가하면 여기에도 반드시 추가할 것.
+
+    22종 공격 목록 기준으로 정리 (팀 문서 "WAF 방어 대상 공격 유형" 참고).
+    IDOR와 GraphQL 공격은 팀 문서에서 취소선 처리(보류)되어 있어 일단 주석 처리함 —
+    필요해지면 주석만 풀면 됨.
+    """
     SQLI = "sqli"
     XSS = "xss"
-    JWT_FORGERY = "jwt_forgery"
     OS_COMMAND_INJECTION = "os_command_injection"
-    PATH_TRAVERSAL = "path_traversal"
-    FILE_UPLOAD = "file_upload"
+    PATH_TRAVERSAL = "path_traversal"          # LFI / Directory Traversal
+    RFI = "rfi"                                # Remote File Inclusion
+    FILE_UPLOAD = "file_upload"                # Web Shell Upload
+    SSTI = "ssti"                              # Server-Side Template Injection
+    XXE = "xxe"                                # XML External Entity
+    SSRF = "ssrf"                              # Server-Side Request Forgery
+    HPP = "hpp"                                # HTTP Parameter Pollution
+    CSRF = "csrf"                              # Cross-Site Request Forgery
+    # IDOR = "idor"                            # 보류 (팀 문서에서 취소선 처리됨)
+    NOSQLI = "nosqli"                          # NoSQL Injection
+    INSECURE_DESERIALIZATION = "insecure_deserialization"
+    OPEN_REDIRECT = "open_redirect"
+    CRLF_INJECTION = "crlf_injection"
+    # GRAPHQL_ATTACK = "graphql_attack"         # 보류 (팀 문서에서 취소선 처리됨)
+    LDAP_INJECTION = "ldap_injection"
+    XPATH_INJECTION = "xpath_injection"
+    CORS_ABUSE = "cors_abuse"                  # CORS Misconfiguration 악용
+    JWT_FORGERY = "jwt_forgery"
     BRUTE_FORCE = "brute_force"
-    CORS_ABUSE = "cors_abuse"
 
 
 class RiskLevel(str, Enum):
@@ -45,6 +64,8 @@ class AttackLog(BaseModel):
     user_agent: Optional[str] = None
     matched_rule_id: Optional[str] = None
     blocked: bool = True
+    target_name: Optional[str] = None
+    mitre_technique_id: Optional[str] = None
     risk_level: RiskLevel = RiskLevel.LOW
 
 

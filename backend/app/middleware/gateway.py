@@ -29,7 +29,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.config import settings
 from app.models.schemas import AttackLog, AttackType, RiskLevel
 from app.storage import account_lockout_store, blacklist_store
-from app.storage.log_store import save_log
+from app.storage.log_store import add_log as save_log
 
 # 알려진 해킹 툴 / 스캐너의 User-Agent 키워드 (필요시 계속 추가)
 BAD_BOT_USER_AGENTS = ["sqlmap", "nikto", "nmap", "masscan", "acunetix", "curl/7.0"]
@@ -308,8 +308,9 @@ class GatewayMiddleware(BaseHTTPMiddleware):
 
             return response
         except Exception:
-            # 실제 에러는 서버 로그에만 남기고(print는 예시일 뿐, 실제로는 logging 모듈 사용 권장)
+            import traceback
             print(f"[Gateway] Unhandled error while processing request from {client_ip}")
+            traceback.print_exc()
             return JSONResponse(
                 status_code=500,
                 content={"detail": "Internal server error"},  # 상세 내용 숨김

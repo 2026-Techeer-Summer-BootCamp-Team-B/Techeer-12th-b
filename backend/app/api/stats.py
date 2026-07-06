@@ -1,76 +1,223 @@
 """
-담당: 심다움 (로그 집계) — 서동영(대시보드)의 차트/카드가 이 API들을 바로 사용
+담당: 심다움/서동영 (대시보드)
+
+대시보드 시각화용 통계 API. Elasticsearch의 집계(aggregation) 쿼리를 사용해서
+매번 전체 로그를 애플리케이션 레벨에서 훑지 않고, ES 안에서 바로 계산한다.
 """
-from collections import Counter, defaultdict
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import List, Literal, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 
-from app.storage.log_store import get_logs
+from app.dependencies import get_current_user
+from app.detection.mitre_mapping import ATTACK_TYPE_TO_MITRE
+from app.models.schemas import AttackType
+from app.storage.es_client import ATTACK_LOG_INDEX, es_client
+from app.storage.blacklist_store import list_blocked
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
-_INTERVAL_TO_MINUTES = {"5m": 5, "1h": 60, "1d": 60 * 24}
+_RANGE_TO_TIMEDELTA = {
+    "24h": timedelta(hours=24),
+    "7d": timedelta(days=7),
+    "30d": timedelta(days=30),
+}
 
 
-@router.get("/summary")
-def get_summary():
-    """대시보드 상단 요약 카드용. GET /api/stats/summary"""
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    logs_today, total_today = get_logs(start_date=today_start, page=1, page_size=10_000)
-
-    blocked_count = sum(1 for log in logs_today if log.blocked)
-    type_counter = Counter(log.attack_type for log in logs_today)
-    ip_counter = Counter(log.source_ip for log in logs_today)
-
-    top_attack_type = type_counter.most_common(1)[0][0] if type_counter else None
-    top_attack_ips = [{"ip": ip, "count": count} for ip, count in ip_counter.most_common(5)]
-
-    return {
-        "total_attacks_today": total_today,
-        "blocked_count": blocked_count,
-        "top_attack_type": top_attack_type,
-        "top_attack_ips": top_attack_ips,
-    }
+def _range_start(range_key: str) -> str:
+    delta = _RANGE_TO_TIMEDELTA.get(range_key, _RANGE_TO_TIMEDELTA["24h"])
+    return (datetime.utcnow() - delta).isoformat()
 
 
-@router.get("/timeline")
-def get_timeline(
-    interval: str = Query(default="1h", pattern="^(5m|1h|1d)$"),
-    start_date: Optional[datetime] = None,
-    end_date: Optional[datetime] = None,
+def _range_query(range_key: str) -> dict:
+    return {"range": {"timestamp": {"gte": _range_start(range_key)}}}
+
+
+class SummaryResponse(BaseModel):
+    total_blocked: int
+    active_blacklist_ips: int
+    critical_count: int
+    top_attack_type: Optional[str] = None
+
+
+@router.get("/summary", response_model=SummaryResponse)
+def get_summary(
+    range: Literal["24h", "7d", "30d"] = Query(default="24h"),
+    current_user: dict = Depends(get_current_user),
 ):
-    """실시간 공격 타임라인 차트용. GET /api/stats/timeline"""
-    logs, _ = get_logs(start_date=start_date, end_date=end_date, page=1, page_size=10_000)
+    response = es_client.search(
+        index=ATTACK_LOG_INDEX,
+        body={
+            "query": _range_query(range),
+            "size": 0,
+            "aggs": {
+                "critical_count": {"filter": {"term": {"risk_level": "CRITICAL"}}},
+                "by_attack_type": {"terms": {"field": "attack_type", "size": 1}},
+            },
+        },
+    )
 
-    bucket_minutes = _INTERVAL_TO_MINUTES[interval]
-    buckets: dict[datetime, dict] = defaultdict(lambda: {"count": 0, "critical_count": 0})
+    total_blocked = response["hits"]["total"]["value"]
+    critical_count = response["aggregations"]["critical_count"]["doc_count"]
+    top_buckets = response["aggregations"]["by_attack_type"]["buckets"]
+    top_attack_type = top_buckets[0]["key"] if top_buckets else None
 
-    for log in logs:
-        # 타임스탬프를 버킷 단위로 내림
-        epoch_minutes = int(log.timestamp.timestamp() // 60)
-        bucket_epoch_minutes = epoch_minutes - (epoch_minutes % bucket_minutes)
-        bucket_time = datetime.utcfromtimestamp(bucket_epoch_minutes * 60)
+    return SummaryResponse(
+        total_blocked=total_blocked,
+        active_blacklist_ips=len(list_blocked()),
+        critical_count=critical_count,
+        top_attack_type=top_attack_type,
+    )
 
-        buckets[bucket_time]["count"] += 1
-        if log.risk_level == "CRITICAL":
-            buckets[bucket_time]["critical_count"] += 1
 
-    sorted_buckets = [
-        {"time": time.isoformat() + "Z", **data}
-        for time, data in sorted(buckets.items())
+class TimelinePoint(BaseModel):
+    timestamp: str
+    count: int
+
+
+class TimelineResponse(BaseModel):
+    points: List[TimelinePoint]
+
+
+@router.get("/timeline", response_model=TimelineResponse)
+def get_timeline(
+    range: Literal["24h", "7d", "30d"] = Query(default="24h"),
+    interval: Literal["1h", "1d"] = Query(default="1h"),
+    current_user: dict = Depends(get_current_user),
+):
+    calendar_interval = "hour" if interval == "1h" else "day"
+
+    response = es_client.search(
+        index=ATTACK_LOG_INDEX,
+        body={
+            "query": _range_query(range),
+            "size": 0,
+            "aggs": {
+                "over_time": {
+                    "date_histogram": {
+                        "field": "timestamp",
+                        "calendar_interval": calendar_interval,
+                    }
+                }
+            },
+        },
+    )
+
+    buckets = response["aggregations"]["over_time"]["buckets"]
+    points = [TimelinePoint(timestamp=b["key_as_string"], count=b["doc_count"]) for b in buckets]
+    return TimelineResponse(points=points)
+
+
+class AttackTypeCount(BaseModel):
+    attack_type: str
+    count: int
+    mitre_technique_id: Optional[str] = None
+
+
+class ByAttackTypeResponse(BaseModel):
+    items: List[AttackTypeCount]
+
+
+@router.get("/by-attack-type", response_model=ByAttackTypeResponse)
+def get_by_attack_type(
+    range: Literal["24h", "7d", "30d"] = Query(default="24h"),
+    current_user: dict = Depends(get_current_user),
+):
+    response = es_client.search(
+        index=ATTACK_LOG_INDEX,
+        body={
+            "query": _range_query(range),
+            "size": 0,
+            "aggs": {
+                "by_type": {"terms": {"field": "attack_type", "size": 25}},
+            },
+        },
+    )
+
+    buckets = response["aggregations"]["by_type"]["buckets"]
+    items = []
+    for b in buckets:
+        attack_type_value = b["key"]
+        mapping = ATTACK_TYPE_TO_MITRE.get(AttackType(attack_type_value))
+        items.append(
+            AttackTypeCount(
+                attack_type=attack_type_value,
+                count=b["doc_count"],
+                mitre_technique_id=mapping["technique_id"] if mapping else None,
+            )
+        )
+    return ByAttackTypeResponse(items=items)
+
+
+class TopIpEntry(BaseModel):
+    source_ip: str
+    count: int
+    is_blocked: bool
+
+
+class TopIpsResponse(BaseModel):
+    items: List[TopIpEntry]
+
+
+@router.get("/top-ips", response_model=TopIpsResponse)
+def get_top_ips(
+    range: Literal["24h", "7d", "30d"] = Query(default="24h"),
+    limit: int = Query(default=10, ge=1, le=100),
+    current_user: dict = Depends(get_current_user),
+):
+    response = es_client.search(
+        index=ATTACK_LOG_INDEX,
+        body={
+            "query": _range_query(range),
+            "size": 0,
+            "aggs": {
+                "top_ips": {"terms": {"field": "source_ip", "size": limit}},
+            },
+        },
+    )
+
+    blocked_ips = {entry["ip"] for entry in list_blocked()}
+    buckets = response["aggregations"]["top_ips"]["buckets"]
+    items = [
+        TopIpEntry(source_ip=b["key"], count=b["doc_count"], is_blocked=b["key"] in blocked_ips)
+        for b in buckets
     ]
-    return {"interval": interval, "buckets": sorted_buckets}
+    return TopIpsResponse(items=items)
 
 
-@router.get("/attack-type-distribution")
-def get_attack_type_distribution():
-    """공격 유형별 비율 파이차트용. GET /api/stats/attack-type-distribution"""
-    logs, _ = get_logs(page=1, page_size=10_000)
-    counter = Counter(log.attack_type for log in logs)
-    total = sum(counter.values()) or 1
-    return [
-        {"attack_type": attack_type, "count": count, "ratio": round(count / total, 3)}
-        for attack_type, count in counter.most_common()
-    ]
+class MitreCoverageEntry(BaseModel):
+    tactic: str
+    technique_id: str
+    technique_name: str
+    detected_count: int
+
+
+class MitreCoverageResponse(BaseModel):
+    items: List[MitreCoverageEntry]
+
+
+@router.get("/mitre-coverage", response_model=MitreCoverageResponse)
+def get_mitre_coverage(current_user: dict = Depends(get_current_user)):
+    """전체 기간 기준으로 attack_type별 탐지 건수를 집계하고, ATT&CK 매핑 정보를 붙여서 반환."""
+    response = es_client.search(
+        index=ATTACK_LOG_INDEX,
+        body={
+            "size": 0,
+            "aggs": {"by_type": {"terms": {"field": "attack_type", "size": 30}}},
+        },
+    )
+
+    counts_by_type = {b["key"]: b["doc_count"] for b in response["aggregations"]["by_type"]["buckets"]}
+
+    items = []
+    for attack_type, mapping in ATTACK_TYPE_TO_MITRE.items():
+        items.append(
+            MitreCoverageEntry(
+                tactic=mapping["tactic"],
+                technique_id=mapping["technique_id"],
+                technique_name=mapping["technique_name"],
+                detected_count=counts_by_type.get(attack_type.value, 0),
+            )
+        )
+    return MitreCoverageResponse(items=items)
