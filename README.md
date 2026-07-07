@@ -121,26 +121,109 @@ Git / GitHub / Notion / Discord
 
 ## 🚀 시작하기
 
+로컬 개발 방식: **백엔드/프론트엔드/더미 로그 생성기는 로컬(VS Code 등)에서 직접 실행**하고,
+**Elasticsearch·Postgres·Redis(+선택적으로 Falco)는 쿠버네티스에 배포**해서
+`kubectl port-forward`로 로컬에 연결합니다.
+
 ### 요구사항
 ```
-Python 3.11+
+Docker Desktop (Kubernetes 활성화) 또는 접근 가능한 k8s 클러스터 + kubectl
+Python 3.11+  (psycopg2-binary의 prebuilt wheel이 있는 버전을 권장)
+Node.js 18+
+(선택) Helm — Falco까지 실제로 띄워서 테스트하고 싶을 때만
 ```
 
-### 설치 및 실행
+### 1) 인프라를 쿠버네티스에 배포
 ```bash
-# 레포 클론
-git clone https://github.com/2026-Techeer-Summer-BootCamp-Team-B/Techeer-12th-b.git
-cd Techeer-12th-b
+kubectl apply -f backend/elasticsearch-deployment.yaml
+kubectl apply -f backend/postgres-deployment.yaml
+kubectl apply -f backend/redis-deployment.yaml
 
-# 가상환경 생성 및 활성화
-python3 -m venv .venv
-source .venv/bin/activate
+# 전부 Running이 될 때까지 대기 (Ctrl+C로 감시 종료)
+kubectl get pods -w
+```
 
-# 의존성 설치
+Falco 실시간 위협 탐지까지 실제로 띄우려면 (선택):
+```bash
+helm repo add falcosecurity https://falcosecurity.github.io/charts
+helm repo update
+helm upgrade --install falco falcosecurity/falco -n falco --create-namespace -f backend/falco-values.yaml
+```
+> `falco-values.yaml`의 `http_output.url`이 `http://host.docker.internal:8000/api/alerts`로
+> 고정되어 있어, 백엔드가 로컬 8000번 포트에서 떠 있어야 Falco 알림이 도달합니다.
+
+### 2) 인프라를 로컬 포트로 연결
+터미널 3개를 열어 각각 계속 실행해 둡니다 (`backend/.env`가 이미 아래 포트 기준으로 설정되어 있어 추가 설정 불필요):
+```bash
+kubectl port-forward svc/elasticsearch 9200:9200
+kubectl port-forward svc/postgres 5432:5432
+kubectl port-forward svc/redis 6379:6379
+```
+
+### 3) 백엔드 실행
+```bash
+cd backend
+python -m venv .venv
+# Windows: .venv\Scripts\activate   /   macOS·Linux: source .venv/bin/activate
 pip install -r requirements.txt
 
-# 서버 실행
-uvicorn main:app --reload
+# 최초 1회만: 테이블 생성 + 관리자 계정 시딩 (admin / changeme123)
+python -m app.init_db
+
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+> Windows에서 `psycopg2-binary` 설치가 `pg_config executable not found`로 실패하면,
+> 최신 prebuilt wheel을 먼저 받도록 `pip install --only-binary=:all: psycopg2-binary`를
+> 실행한 뒤 `pip install -r requirements.txt`를 다시 시도하세요.
+
+확인: http://localhost:8000/health → `{"status":"ok"}`
+
+### 4) 프론트엔드 실행
+```bash
+cd frontend
+npm install
+npm run dev
+```
+확인: http://localhost:5173 (`frontend/.env`의 `VITE_API_URL`이 백엔드 포트(8000)와 일치해야 함)
+
+### 5) 더미 공격 로그 생성기 실행
+WAF 공격(SQLi/XSS/Path Traversal/OS Command Injection/JWT 위조)은 `/proxy/{path}`로,
+Falco 스타일 탐지는 `/api/alerts`로 실제 요청을 보내 파이프라인 전체를 검증합니다.
+```bash
+cd tests
+pip install -r requirements.txt   # backend 가상환경을 그대로 써도 무방
+
+# Windows(PowerShell)
+$env:BACKEND_URL="http://localhost:8000"; $env:EVENTS_PER_SECOND="5"; python dummy_generator.py
+# macOS/Linux
+BACKEND_URL=http://localhost:8000 EVENTS_PER_SECOND=5 python dummy_generator.py
+```
+
+### ✅ 테스트 흐름
+1. http://localhost:5173 접속 → `admin` / `changeme123` 로그인
+2. 우상단 `LIVE` 표시(녹색)로 WebSocket 연결 확인
+3. `dummy_generator.py` 실행 → 공격이 403으로 차단되며 통계 카드 / 실시간 타임라인 /
+   공격 유형 도넛 차트 / 최근 차단 로그 테이블 / 하단 티커에 즉시 반영되는지 확인
+4. Falco 웹훅 경로를 직접 확인하고 싶다면:
+   ```bash
+   curl -X POST http://localhost:8000/api/alerts -H "Content-Type: application/json" -d '{
+     "output": "Rule '"'"'Terminal shell in container'"'"' fired by proc=bash in pod=demo",
+     "priority": "Warning",
+     "rule": "Terminal shell in container",
+     "output_fields": {"k8s.pod.name": "demo", "proc.name": "bash", "fd.name": "/bin/bash"}
+   }'
+   ```
+5. Elasticsearch 적재를 직접 확인:
+   ```bash
+   curl "http://localhost:9200/attack-logs/_search?sort=timestamp:desc&size=5&pretty"
+   ```
+
+### 종료 / 정리
+```bash
+# 각 port-forward 터미널, 백엔드, 프론트엔드: Ctrl+C
+
+# 인프라를 완전히 초기화하고 싶을 때만 (모든 데이터 삭제됨)
+kubectl delete -f backend/elasticsearch-deployment.yaml -f backend/postgres-deployment.yaml -f backend/redis-deployment.yaml
 ```
 
 <br>

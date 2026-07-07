@@ -11,6 +11,16 @@
         -> /api/logs, /api/stats, /api/blacklist, /api/rules (조회/관리 API)
         -> /ws/alerts (대시보드 실시간 알림)
 """
+import sys
+
+# Windows 콘솔의 기본 코드페이지(cp949 등)는 로그 곳곳에 쓰인 이모지(✅🚨❌ 등)를 인코딩하지 못해
+# print() 호출 자체가 UnicodeEncodeError로 죽는다. 예를 들어 app/api/ws.py는 인증 성공 직후
+# print에서 죽어서 WebSocket이 열리자마자 서버 쪽 예외로 끊기는 문제가 있었다.
+# stdout/stderr를 UTF-8로 강제해서 어떤 콘솔 코드페이지에서도 안전하게 만든다.
+if sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 

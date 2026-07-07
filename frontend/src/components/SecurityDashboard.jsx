@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
   AreaChart,
   Area,
@@ -18,7 +18,8 @@ import {
   Radio,
   LogOut,
 } from "lucide-react";
-import { apiFetch, getWebSocketUrl } from "../lib/api";
+import { apiFetch } from "../lib/api";
+import { useWebSocket } from "../hooks/useWebSocket";
 
 // ── 백엔드 AttackType(20종) 기준 라벨/색상 매핑 ──────────────────────────
 const ATTACK_META = {
@@ -73,8 +74,7 @@ function toDisplayLog(raw) {
   };
 }
 
-export default function SecurityDashboard({ onLogout }) {
-  const [connected, setConnected] = useState(false);
+export default function SecurityDashboard({ onLogout, token }) {
   const [logs, setLogs] = useState([]);
   const [ticker, setTicker] = useState([]);
   const [timeline, setTimeline] = useState([]);
@@ -84,8 +84,8 @@ export default function SecurityDashboard({ onLogout }) {
   const [reduceMotion, setReduceMotion] = useState(false);
   const [loadError, setLoadError] = useState("");
   const bucketRef = useRef({ count: 0, critical: 0 });
-  const wsRef = useRef(null);
 
+  // 접근성 환경설정 감지
   useEffect(() => {
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
     setReduceMotion(mq.matches);
@@ -120,7 +120,7 @@ export default function SecurityDashboard({ onLogout }) {
           timelineRes.points.map((p, i) => ({
             t: i,
             count: p.count,
-            critical: 0, // 과거 시점의 critical 세부 구분은 timeline API에 없어 0으로 초기화
+            critical: 0,
           }))
         );
 
@@ -136,44 +136,36 @@ export default function SecurityDashboard({ onLogout }) {
     };
   }, []);
 
-  // ── WebSocket 연결 - 공격 탐지 시 실시간 수신 ───────────────────────
-  useEffect(() => {
-    const ws = new WebSocket(getWebSocketUrl());
-    wsRef.current = ws;
+  // ── 실시간 데이터 가공 스트림 핸들러 (useCallback 최적화) ────────────────
+  const handleWebSocketMessage = useCallback((event) => {
+    let payload;
+    try {
+      payload = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    const raw = payload.data;
+    if (!raw) return;
 
-    ws.onopen = () => setConnected(true);
-    ws.onclose = () => setConnected(false);
-    ws.onerror = () => setConnected(false);
+    const displayLog = toDisplayLog(raw);
 
-    ws.onmessage = (event) => {
-      let payload;
-      try {
-        payload = JSON.parse(event.data);
-      } catch {
-        return;
-      }
-      const raw = payload.data;
-      if (!raw) return;
+    setTicker((prev) => [...prev.slice(-39), displayLog]);
+    setLogs((prev) => [displayLog, ...prev].slice(0, 8));
+    setTotals((prev) => ({ today: prev.today + 1, blocked: prev.blocked + 1 }));
+    setTypeCounts((prev) => ({
+      ...prev,
+      [displayLog.type]: (prev[displayLog.type] || 0) + 1,
+    }));
 
-      const displayLog = toDisplayLog(raw);
-
-      setTicker((prev) => [...prev.slice(-39), displayLog]);
-      setLogs((prev) => [displayLog, ...prev].slice(0, 8));
-      setTotals((prev) => ({ today: prev.today + 1, blocked: prev.blocked + 1 }));
-      setTypeCounts((prev) => ({
-        ...prev,
-        [displayLog.type]: (prev[displayLog.type] || 0) + 1,
-      }));
-
-      bucketRef.current.count += 1;
-      if (payload.event === "critical_alert") {
-        bucketRef.current.critical += 1;
-        setToast(displayLog);
-      }
-    };
-
-    return () => ws.close();
+    bucketRef.current.count += 1;
+    if (payload.event === "critical_alert") {
+      bucketRef.current.critical += 1;
+      setToast(displayLog);
+    }
   }, []);
+
+  // 💡 [코드 해결] 클로드의 useWebSocket 훅만 단독 연동 (중복되었던 올드 useEffect 파트는 완벽 삭제)
+  const { isConnected } = useWebSocket(token, handleWebSocketMessage);
 
   // 타임라인 버킷 롤링 (2.5초마다 최근 버킷에 실시간 집계 반영)
   useEffect(() => {
@@ -232,9 +224,10 @@ export default function SecurityDashboard({ onLogout }) {
           </div>
         </div>
         <div className="flex items-center gap-4">
-          <div className={`flex items-center gap-1.5 text-xs ${connected ? "text-emerald-400" : "text-slate-600"}`}>
-            <Radio className={`w-3.5 h-3.5 ${connected ? motionCls : ""}`} />
-            <span className="font-mono">{connected ? "LIVE" : "연결 끊김"}</span>
+          {/* 변수명을 훅에서 반환받은이름(isConnected)과 안전하게 일치시켰습니다 */}
+          <div className={`flex items-center gap-1.5 text-xs ${isConnected ? "text-emerald-400" : "text-slate-600"}`}>
+            <Radio className={`w-3.5 h-3.5 ${isConnected ? motionCls : ""}`} />
+            <span className="font-mono">{isConnected ? "LIVE" : "연결 끊김"}</span>
           </div>
           <button
             onClick={onLogout}
@@ -454,28 +447,28 @@ export default function SecurityDashboard({ onLogout }) {
 
       {/* 하단 실시간 공격 스트림 티커 */}
       <div className="fixed bottom-0 left-0 right-0 bg-slate-950/95 border-t border-slate-800 backdrop-blur">
-        <div className="flex items-center gap-2 px-4 py-2 overflow-hidden">
-          <span className="text-[10px] uppercase tracking-wider text-slate-600 shrink-0 font-mono">
-            attacks
-          </span>
-          <div className="flex gap-3 overflow-x-hidden">
-            {ticker.slice(-24).map((ev) => (
-              <span
-                key={ev.id}
-                className="flex items-center gap-1 text-[10px] font-mono whitespace-nowrap shrink-0"
-              >
-                <span
-                  className="w-1.5 h-1.5 rounded-full inline-block"
-                  style={{ background: ev.color }}
-                />
-                <span className="text-slate-600">{fmtTime(ev.time)}</span>
-                <span className="text-slate-300">{ev.ip}</span>
-                <span style={{ color: ev.color }}>{ev.typeLabel}</span>
-              </span>
-            ))}
-          </div>
-        </div>
-      </div>
+  <div className="flex items-center gap-2 px-4 py-2 overflow-hidden">
+    <span className="text-[10px] uppercase tracking-wider text-slate-600 shrink-0 font-mono">
+      attacks
+    </span>
+    <div className="flex gap-3 overflow-x-hidden">
+      {ticker.slice(-24).map((ev) => (
+        <span
+          key={ev.id}
+          className="flex items-center gap-1 text-[10px] font-mono whitespace-nowrap shrink-0"
+        >
+          <span
+            className="w-1.5 h-1.5 rounded-full inline-block"
+            style={{ background: ev.color }}
+          />
+          <span className="text-slate-600">{fmtTime(ev.time)}</span>
+          <span className="text-slate-300">{ev.ip}</span>
+          <span style={{ color: ev.color }}>{ev.typeLabel}</span>
+        </span>
+      ))}
+    </div>
+  </div>
+</div>
 
       {/* CRITICAL 알림 토스트 */}
       {toast && (

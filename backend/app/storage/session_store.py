@@ -30,8 +30,24 @@ def create_session(user_id: UUID, role: str, ttl_seconds: int = _DEFAULT_TTL_SEC
 
 def get_session(token: str) -> Optional[dict]:
     """토큰으로 세션 정보(user_id, role) 조회. 없거나 만료됐으면 None."""
-    data = redis_client.hgetall(_key(token))
-    return data if data else None
+    if not token:
+        return None
+        
+    clean_token = token.strip().replace('"', '').replace("'", "")
+    raw_data = redis_client.hgetall(_key(clean_token))
+    
+    if not raw_data:
+        return None
+        
+    # Redis에서 온 바이트(b'') 데이터를 일반 문자열로 완벽 변환
+    string_data = {}
+    for k, v in raw_data.items():
+        # key와 value가 바이트 타입이면 문자열로 decode, 아니면 그대로 유지
+        key_str = k.decode('utf-8') if isinstance(k, bytes) else str(k)
+        val_str = v.decode('utf-8') if isinstance(v, bytes) else str(v)
+        string_data[key_str] = val_str
+        
+    return string_data
 
 
 def delete_session(token: str) -> None:
