@@ -2,8 +2,8 @@ from fastapi import APIRouter, Request
 from datetime import datetime
 import uuid
 
-from app.models.schemas import AttackLog, AttackType, RiskLevel  
-from app.storage.es_client import es_client
+from app.models.schemas import AttackLog, AttackType, RiskLevel
+from app.storage.log_store import add_log
 
 from app.api.ws import manager
 
@@ -90,11 +90,10 @@ async def receive_falco_alert(request: Request):
             risk_level=risk_level
         )
         
-        # 5. 수신 가공 완료된 딕셔너리 생성 및 공통 태그 주입
-        log_dict = attack_log.model_dump()  # Pydantic v2 기준 (v1인 경우 .dict() 사용)
-        log_dict["agent"] = "log-analyzer"
-
-        es_client.index(index="attack-logs", document=log_dict)
+        # 5. log_store.get_logs가 조회하는 것과 동일한 인덱스(ATTACK_LOG_INDEX)에 저장.
+        # (예전엔 es_client.index(index="attack-logs", ...)를 직접 호출해서 실제 조회
+        # 인덱스인 "attack_logs"와 이름이 어긋나 새로고침 시 로그가 사라졌었다.)
+        add_log(attack_log)
 
         # [파이프라인 2] 실시간 웹소켓 브로드캐스트 (화면에 실시간으로 팝업/로그 뜸)
         # 프론트(SecurityDashboard.jsx)는 app/proxy/proxy.py가 보내는 {"event", "data"} 형태를

@@ -207,6 +207,15 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 >
 > `--host 0.0.0.0`이 중요합니다 — `127.0.0.1`로만 열면 k3d 안의 Falco 파드가
 > `host.docker.internal`로 접근할 때 연결이 거부됩니다.
+>
+> **Windows에서 `[WinError 10013] 액세스 권한에 의해 숨겨진 소켓에 액세스를 시도했습니다`
+> 에러가 나면**, `--reload`로 띄운 이전 uvicorn 프로세스가 Ctrl+C 이후에도 완전히
+> 종료되지 않고 8000번 포트를 계속 붙잡고 있는 경우입니다. Docker/k3d와는 무관합니다.
+> 아래로 점유 중인 PID를 찾아서 종료한 뒤 다시 실행하세요.
+> ```powershell
+> netstat -ano | findstr :8000
+> taskkill /PID <위에서 나온 PID> /F
+> ```
 
 확인: http://localhost:8000/health → `{"status":"ok"}`
 
