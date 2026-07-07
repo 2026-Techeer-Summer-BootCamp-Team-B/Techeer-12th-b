@@ -14,7 +14,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import allowlist, audit_logs, auth, blacklist, logs, rules, stats, targets, ws
+from app.api import allowlist, audit_logs, auth, blacklist, logs, rules, stats, targets, ws, alerts
 from app.config import settings
 from app.middleware.gateway import GatewayMiddleware
 from app.proxy.proxy import router as proxy_router
@@ -60,6 +60,7 @@ app.include_router(targets.router)
 app.include_router(allowlist.router)
 app.include_router(audit_logs.router)
 app.include_router(ws.router)
+app.include_router(alerts.router, prefix="/api/alerts")
 
 
 @app.get("/health")
