@@ -121,19 +121,43 @@ Git / GitHub / Notion / Discord
 
 ## 🚀 시작하기
 
-로컬 개발 방식: **백엔드/프론트엔드/더미 로그 생성기는 로컬(VS Code 등)에서 직접 실행**하고,
-**Elasticsearch·Postgres·Redis(+선택적으로 Falco)는 쿠버네티스에 배포**해서
-`kubectl port-forward`로 로컬에 연결합니다.
+로컬 개발 방식: **백엔드/프론트엔드/더미 공격 로그 생성기는 로컬(VS Code PowerShell 등)에서 직접 실행**하고,
+**Elasticsearch·Postgres·Redis·Falco(DaemonSet)는 k3d 클러스터 안에 배포**해서
+`kubectl port-forward`로 로컬 백엔드/DB를 연결합니다.
 
 ### 요구사항
 ```
-Docker Desktop (Kubernetes 활성화) 또는 접근 가능한 k8s 클러스터 + kubectl
+Docker Desktop (Windows/Mac) 또는 Docker Engine
+k3d, kubectl, Helm
 Python 3.11+  (psycopg2-binary의 prebuilt wheel이 있는 버전을 권장)
 Node.js 18+
-(선택) Helm — Falco까지 실제로 띄워서 테스트하고 싶을 때만
 ```
 
-### 1) 인프라를 쿠버네티스에 배포
+**k3d / kubectl / Helm 설치**
+```powershell
+# Windows (winget)
+winget install --id k3d.k3d -e
+winget install --id Kubernetes.kubectl -e
+winget install --id Helm.Helm -e
+```
+```bash
+# macOS (Homebrew)
+brew install k3d kubectl helm
+```
+> 설치 직후 새 터미널을 열어야 PATH가 반영됩니다.
+
+### 1) k3d 클러스터 생성
+저장소 루트의 `k3d-cluster-config.yaml`로 서버 1개 + 에이전트 2개(총 3노드) 클러스터를 만듭니다.
+Falco는 DaemonSet(노드마다 하나씩 뜨는 파드)이라, 노드가 여러 개여야 "노드마다 하나씩 배포"되는
+동작을 실제로 확인할 수 있습니다.
+```bash
+k3d cluster create --config k3d-cluster-config.yaml
+
+kubectl get nodes
+# techeer-ids-server-0, techeer-ids-agent-0, techeer-ids-agent-1 3개가 Ready여야 함
+```
+
+### 2) 인프라(ES/Postgres/Redis) 배포
 ```bash
 kubectl apply -f backend/elasticsearch-deployment.yaml
 kubectl apply -f backend/postgres-deployment.yaml
@@ -143,16 +167,21 @@ kubectl apply -f backend/redis-deployment.yaml
 kubectl get pods -w
 ```
 
-Falco 실시간 위협 탐지까지 실제로 띄우려면 (선택):
+### 3) Falco를 DaemonSet으로 배포 (기본 룰셋 그대로 사용)
 ```bash
 helm repo add falcosecurity https://falcosecurity.github.io/charts
 helm repo update
 helm upgrade --install falco falcosecurity/falco -n falco --create-namespace -f backend/falco-values.yaml
-```
-> `falco-values.yaml`의 `http_output.url`이 `http://host.docker.internal:8000/api/alerts`로
-> 고정되어 있어, 백엔드가 로컬 8000번 포트에서 떠 있어야 Falco 알림이 도달합니다.
 
-### 2) 인프라를 로컬 포트로 연결
+kubectl get daemonset -n falco
+# DESIRED/READY가 노드 수(3)와 같아야 노드마다 하나씩 뜬 것
+```
+> `falco-values.yaml`은 커스텀 룰 없이 Falco 기본 룰셋을 그대로 사용하고,
+> `http_output.url`은 `http://host.docker.internal:8000/api/alerts`로 고정되어 있어
+> **로컬에서 백엔드가 8000번 포트로 떠 있어야** Falco 알림이 도달합니다. k3d 노드도 결국
+> Docker 컨테이너라 Docker Desktop이 주입하는 `host.docker.internal`을 그대로 씁니다.
+
+### 4) 인프라를 로컬 포트로 연결
 터미널 3개를 열어 각각 계속 실행해 둡니다 (`backend/.env`가 이미 아래 포트 기준으로 설정되어 있어 추가 설정 불필요):
 ```bash
 kubectl port-forward svc/elasticsearch 9200:9200
@@ -160,7 +189,7 @@ kubectl port-forward svc/postgres 5432:5432
 kubectl port-forward svc/redis 6379:6379
 ```
 
-### 3) 백엔드 실행
+### 5) 백엔드 실행 (로컬, VS Code PowerShell)
 ```bash
 cd backend
 python -m venv .venv
@@ -175,10 +204,13 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 > Windows에서 `psycopg2-binary` 설치가 `pg_config executable not found`로 실패하면,
 > 최신 prebuilt wheel을 먼저 받도록 `pip install --only-binary=:all: psycopg2-binary`를
 > 실행한 뒤 `pip install -r requirements.txt`를 다시 시도하세요.
+>
+> `--host 0.0.0.0`이 중요합니다 — `127.0.0.1`로만 열면 k3d 안의 Falco 파드가
+> `host.docker.internal`로 접근할 때 연결이 거부됩니다.
 
 확인: http://localhost:8000/health → `{"status":"ok"}`
 
-### 4) 프론트엔드 실행
+### 6) 프론트엔드 실행 (로컬, VS Code PowerShell)
 ```bash
 cd frontend
 npm install
@@ -186,7 +218,7 @@ npm run dev
 ```
 확인: http://localhost:5173 (`frontend/.env`의 `VITE_API_URL`이 백엔드 포트(8000)와 일치해야 함)
 
-### 5) 더미 공격 로그 생성기 실행
+### 7) 더미 공격 로그 생성기 실행 (로컬, VS Code PowerShell)
 WAF 공격(SQLi/XSS/Path Traversal/OS Command Injection/JWT 위조)은 `/proxy/{path}`로,
 Falco 스타일 탐지는 `/api/alerts`로 실제 요청을 보내 파이프라인 전체를 검증합니다.
 ```bash
@@ -204,15 +236,16 @@ BACKEND_URL=http://localhost:8000 EVENTS_PER_SECOND=5 python dummy_generator.py
 2. 우상단 `LIVE` 표시(녹색)로 WebSocket 연결 확인
 3. `dummy_generator.py` 실행 → 공격이 403으로 차단되며 통계 카드 / 실시간 타임라인 /
    공격 유형 도넛 차트 / 최근 차단 로그 테이블 / 하단 티커에 즉시 반영되는지 확인
-4. Falco 웹훅 경로를 직접 확인하고 싶다면:
+4. Falco가 실제로 탐지 중인지 확인 (예: 클러스터 안에서 민감 파일 접근을 흉내내는 파드 실행):
    ```bash
-   curl -X POST http://localhost:8000/api/alerts -H "Content-Type: application/json" -d '{
-     "output": "Rule '"'"'Terminal shell in container'"'"' fired by proc=bash in pod=demo",
-     "priority": "Warning",
-     "rule": "Terminal shell in container",
-     "output_fields": {"k8s.pod.name": "demo", "proc.name": "bash", "fd.name": "/bin/bash"}
-   }'
+   kubectl run attacker --rm -it --image=ubuntu -- bash -c "cat /etc/shadow"
    ```
+   Falco 파드 로그와 `http_output` 전송 성공 여부 확인:
+   ```bash
+   kubectl logs -n falco -l app.kubernetes.io/name=falco -c falco --tail=50
+   ```
+   (`"http" output timeout` / `libcurl failed to perform call` 같은 에러가 보이면
+   5)번의 `--host 0.0.0.0` 여부와 백엔드가 실제로 떠 있는지부터 확인하세요.)
 5. Elasticsearch 적재를 직접 확인:
    ```bash
    curl "http://localhost:9200/attack-logs/_search?sort=timestamp:desc&size=5&pretty"
@@ -220,10 +253,10 @@ BACKEND_URL=http://localhost:8000 EVENTS_PER_SECOND=5 python dummy_generator.py
 
 ### 종료 / 정리
 ```bash
-# 각 port-forward 터미널, 백엔드, 프론트엔드: Ctrl+C
+# 더미 생성기/포트포워드/백엔드/프론트엔드 터미널: Ctrl+C
 
-# 인프라를 완전히 초기화하고 싶을 때만 (모든 데이터 삭제됨)
-kubectl delete -f backend/elasticsearch-deployment.yaml -f backend/postgres-deployment.yaml -f backend/redis-deployment.yaml
+# 클러스터 자체를 완전히 지우고 싶을 때 (모든 데이터 삭제됨)
+k3d cluster delete techeer-ids
 ```
 
 <br>

@@ -1,0 +1,20 @@
+# k3d 클러스터 설정 파일.
+# Falco는 DaemonSet(노드마다 하나씩 뜨는 파드)이라, 노드가 1개뿐이면 사실상 일반
+# Deployment와 다를 게 없다. 서버 1개 + 에이전트 2개(총 3노드)로 구성해서
+# "노드마다 하나씩" 배포되는 걸 실제로 확인할 수 있게 한다.
+#
+# 사용법:
+#   k3d cluster create --config k3d-cluster-config.yaml
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: techeer-ids
+servers: 1
+agents: 2
+options:
+  k3d:
+    wait: true
+    timeout: "120s"
+  kubeconfig:
+    updateDefaultKubeconfig: true
+    switchCurrentContext: true
