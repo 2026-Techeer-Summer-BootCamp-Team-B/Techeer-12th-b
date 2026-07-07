@@ -1,0 +1,19 @@
+# 1. Falco 헬름 리포지토리 등록 (최초 1회)
+# helm repo add falcosecurity https://falcosecurity.github.io/charts
+#helm repo update
+
+# 2. Git으로 공유받은 values.yaml 파일을 사용해 설치/업그레이드
+#helm upgrade --install falco falcosecurity/falco -n falco --create-namespace -f falco-values.yaml
+#
+
+driver:
+  kind: modern_ebpf
+
+tty: true
+
+falco:
+  json_output: true
+  http_output:
+    enabled: true
+    # 팀원의 PC 환경에서도 동작하도록 윈도우 본토 주소 지정
+    url: "http://host.docker.internal:8000/api/alerts"

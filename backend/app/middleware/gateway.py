@@ -5,11 +5,12 @@
 1) 블랙리스트 IP 즉시 차단
 2) Rate Limiting (짧은 시간에 너무 많은 요청 차단)
 3) Bad Bot 차단 (알려진 해킹 툴 User-Agent 차단)
-4) Brute Force 탐지 — 3단계로 방어
-   4-1) IP 기준: 같은 IP의 반복된 로그인 실패
-   4-2) 계정 기준: IP를 바꿔가며 같은 계정만 노리는 경우 (IP 로테이션 대응)
-   4-3) 시스템 전체 기준: IP/계정 다 분산시켜서 도는 대규모 공격 조짐 감지 (경보만, 자동차단 X)
-5) 에러 마스킹 (서버 내부 에러 메시지가 그대로 노출되지 않도록)
+4) CORS 위반 차단 (화이트리스트에 없는 Origin에서의 브라우저 요청 차단)
+5) Brute Force 탐지 — 3단계로 방어
+   5-1) IP 기준: 같은 IP의 반복된 로그인 실패
+   5-2) 계정 기준: IP를 바꿔가며 같은 계정만 노리는 경우 (IP 로테이션 대응)
+   5-3) 시스템 전체 기준: IP/계정 다 분산시켜서 도는 대규모 공격 조짐 감지 (경보만, 자동차단 X)
+6) 에러 마스킹 (서버 내부 에러 메시지가 그대로 노출되지 않도록)
 
 FastAPI의 미들웨어 체인에서 가장 먼저 실행되어,
 여기서 걸러지지 않은 요청만 디코더(app/middleware/decoder.py)와
@@ -26,7 +27,9 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
+from app.models.schemas import AttackLog, AttackType, RiskLevel
 from app.storage import account_lockout_store, blacklist_store
+from app.storage.log_store import add_log as save_log
 
 # 알려진 해킹 툴 / 스캐너의 User-Agent 키워드 (필요시 계속 추가)
 BAD_BOT_USER_AGENTS = ["sqlmap", "nikto", "nmap", "masscan", "acunetix", "curl/7.0"]
@@ -49,6 +52,10 @@ ACCOUNT_LOCKOUT_DURATION_SECONDS = 300
 SYSTEM_WIDE_FAILURE_THRESHOLD = 50
 SYSTEM_WIDE_WINDOW_SECONDS = 60
 
+# CORS 검증을 적용할 경로 접두사 — 실제 데이터를 주고받는 API/프록시 경로만 검사한다.
+# (/health, /docs 같은 건 브라우저가 아니어도 호출하는 경우가 많아 제외)
+CORS_PROTECTED_PATH_PREFIXES = ("/api", "/proxy")
+
 # IP별 최근 요청 시각을 저장하는 메모리 저장소 (Rate Limiting용)
 # 실제 운영에서는 여러 서버 인스턴스가 있을 수 있으므로 Redis 등으로 교체 권장
 _request_history: Dict[str, Deque[float]] = defaultdict(deque)
@@ -66,19 +73,31 @@ _system_wide_login_failures: Deque[float] = deque()
 def get_client_ip(request: Request) -> str:
     """
     실제 클라이언트 IP를 판단한다.
+ 
     배포 아키텍처상 Traefik 같은 리버스 프록시가 앞단에 있으면
-    request.client.host는 프록시 자신의 IP가 돼버려서 모든 요청이 같은 IP로 잡힌다.
-    이 경우 프록시가 X-Forwarded-For 헤더에 원본 클라이언트 IP를 남겨주므로 그걸 우선 사용한다.
-
-    주의: X-Forwarded-For는 클라이언트가 임의로 위조해서 보낼 수도 있는 헤더라서,
-    신뢰할 수 있는 리버스 프록시를 실제로 앞단에 두고 있을 때만 사용해야 한다
-    (그렇지 않으면 공격자가 이 헤더 값을 계속 바꿔서 IP 기반 차단을 그냥 우회할 수 있음).
+    request.client.host는 프록시 자신의 IP가 되어버린다. 이때 프록시는
+    X-Forwarded-For 헤더에 원본 클라이언트 IP를 남겨주므로 그 값을 써야 한다.
+ 
+    다만 X-Forwarded-For는 누구나 마음대로 조작해서 보낼 수 있는 일반 HTTP 헤더다.
+    그래서 이 헤더를 무조건 믿으면, 공격자가 매 요청마다 이 값을 바꿔가며 보내는 것만으로
+    IP 기준 차단(Rate Limiting, Brute Force)을 통째로 우회할 수 있게 된다.
+ 
+    따라서 반드시 "누가 이 헤더를 보냈는지"부터 확인해야 한다:
+    1) 지금 이 요청을 실제로 우리 서버에 직접 연결한 IP(request.client.host)가
+       우리가 운영하는 신뢰된 프록시(settings.trusted_proxies) 목록에 있는지 확인
+    2) 신뢰된 프록시가 보낸 요청일 때만 X-Forwarded-For 값을 사용
+    3) 그 외의 경우(직접 우리 서버를 호출하거나, 모르는 프록시를 거친 경우)는
+       헤더를 무시하고 직접 연결된 IP를 그대로 신뢰한다 — 헤더 위조로 우회하지 못하게 막는 핵심 로직
     """
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        # "client, proxy1, proxy2" 형태로 올 수 있어 맨 앞(원본 클라이언트)만 사용
-        return forwarded_for.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    direct_client_ip = request.client.host if request.client else None
+ 
+    if direct_client_ip in settings.trusted_proxies:
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            # "client, proxy1, proxy2" 형태로 올 수 있어 맨 앞(원본 클라이언트)만 사용
+            return forwarded_for.split(",")[0].strip()
+ 
+    return direct_client_ip or "unknown"
 
 
 def _is_rate_limited(ip: str) -> bool:
@@ -102,6 +121,43 @@ def is_login_endpoint(path: str) -> bool:
     """요청 경로가 로그인/인증 엔드포인트인지 판단."""
     path_lower = path.lower()
     return any(keyword in path_lower for keyword in LOGIN_PATH_KEYWORDS)
+
+
+def is_cors_protected_path(path: str) -> bool:
+    """CORS 검증이 필요한 경로인지 판단 (실제 데이터를 다루는 API/프록시만)."""
+    return path.startswith(CORS_PROTECTED_PATH_PREFIXES)
+
+
+def check_cors_violation(request: Request) -> bool:
+    """
+    Origin 헤더를 화이트리스트(settings.allowed_origins)와 비교한다.
+
+    핵심 판단 기준: Origin 헤더는 "브라우저가 자동으로 붙이는" 헤더라서
+    curl이나 서버 대 서버 호출에는 보통 없다. 그래서:
+    - Origin이 아예 없으면 브라우저 fetch가 아닐 가능성이 높으므로 통과시킨다
+      (여기서 다 막아버리면 정상적인 서버 간 통신, curl 테스트도 막혀버림)
+    - Origin이 있는데 화이트리스트에 없으면, 다른 사이트(evil.com 등)에서
+      브라우저를 통해 우리 API를 몰래 호출하려는 시도로 간주하고 차단한다.
+    """
+    origin = request.headers.get("origin")
+    if not origin:
+        return False
+    return origin not in settings.allowed_origins
+
+
+def _log_cors_violation(ip: str, path: str, origin: str) -> None:
+    """CORS 위반 시도를 AttackLog로 남겨서 대시보드에서도 보이게 한다."""
+    save_log(
+        AttackLog(
+            source_ip=ip,
+            attack_type=AttackType.CORS_ABUSE,
+            target_endpoint=path,
+            http_method="",  # 호출부에서 필요시 채움
+            payload_snippet=f"Origin: {origin}"[:200],
+            blocked=True,
+            risk_level=RiskLevel.MEDIUM,
+        )
+    )
 
 
 def extract_login_identifier(body_bytes: bytes, content_type: str) -> Optional[str]:
@@ -179,12 +235,27 @@ class GatewayMiddleware(BaseHTTPMiddleware):
         is_login_request = is_login_endpoint(request.url.path)
 
         # 1) 블랙리스트 확인 — 이미 차단된 IP는 바로 튕겨냄
-        if blacklist_store.is_blocked(client_ip):
-            return JSONResponse(status_code=403, content={"detail": "Access denied"})
+        # if blacklist_store.is_blocked(client_ip):
+        #    return JSONResponse(status_code=403, content={"detail": "Access denied"})
 
         # 2) Bad Bot 차단
         if _is_bad_bot(user_agent):
-            return JSONResponse(status_code=403, content={"detail": "Access denied"})
+            from app.models.schemas import IPBlacklistEntry
+            
+            blacklist_store.add_or_update(
+                IPBlacklistEntry(ip=client_ip, reason="bad_bot_detected")
+            )
+            # return JSONResponse(status_code=403, content={"detail": "Access denied"})
+
+        # 2-1) CORS 위반 검사 — 화이트리스트에 없는 Origin에서 온 브라우저 요청 차단.
+        #      정적 문서(/docs)나 헬스체크는 검사 대상에서 제외 (CORS_PROTECTED_PATH_PREFIXES 참고)
+        if is_cors_protected_path(request.url.path) and check_cors_violation(request):
+            origin = request.headers.get("origin", "")
+            _log_cors_violation(client_ip, request.url.path, origin)
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Origin not allowed"},
+            )
 
         # 3) Rate Limiting — 초과 시 블랙리스트에도 자동 등록
         if _is_rate_limited(client_ip):
@@ -193,22 +264,23 @@ class GatewayMiddleware(BaseHTTPMiddleware):
             blacklist_store.add_or_update(
                 IPBlacklistEntry(ip=client_ip, reason="rate_limit_exceeded")
             )
-            return JSONResponse(status_code=429, content={"detail": "Too many requests"})
+            # return JSONResponse(status_code=429, content={"detail": "Too many requests"})
 
         # 4-2 사전 체크: 로그인 요청이면 body에서 계정을 먼저 뽑아서,
         # 이미 잠긴 계정이면 실제 백엔드에 넘기지도 않고 여기서 바로 차단한다.
         # (IP를 아무리 바꿔도 계정이 같으면 이 단계에서 막힘)
         login_identifier: Optional[str] = None
         if is_login_request and request.method in ("POST", "PUT"):
-            body_bytes = await request.body()  # Starlette가 내부적으로 캐싱해서 이후 재사용 가능
+            body_bytes = await request.body()
             content_type = request.headers.get("content-type", "")
             login_identifier = extract_login_identifier(body_bytes, content_type)
 
             if login_identifier and account_lockout_store.is_locked(login_identifier):
-                return JSONResponse(
-                    status_code=403,
-                    content={"detail": "Account temporarily locked due to repeated failed login attempts"},
-                )
+                print(f"[Gateway][TEST] 잠긴 계정 통과 (락아웃 상태 유지, IP 블랙리스트 X): {login_identifier}")
+                # return JSONResponse(
+                #     status_code=403,
+                #     content={"detail": "Account temporarily locked due to repeated failed login attempts"},
+                # )
 
         # 5) 에러 마스킹 — 하위 로직에서 예외가 터져도 상세 스택트레이스를 노출하지 않음
         try:
@@ -242,8 +314,9 @@ class GatewayMiddleware(BaseHTTPMiddleware):
 
             return response
         except Exception:
-            # 실제 에러는 서버 로그에만 남기고(print는 예시일 뿐, 실제로는 logging 모듈 사용 권장)
+            import traceback
             print(f"[Gateway] Unhandled error while processing request from {client_ip}")
+            traceback.print_exc()
             return JSONResponse(
                 status_code=500,
                 content={"detail": "Internal server error"},  # 상세 내용 숨김

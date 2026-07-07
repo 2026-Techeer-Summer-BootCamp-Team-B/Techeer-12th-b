@@ -1,51 +1,42 @@
 """
-담당: 서동영 (대시보드) + 심다움 (알림 트리거 - 로그 마스터)
+담당: 서동영 (대시보드)
 
-대시보드가 이 WebSocket에 연결해두면, CRITICAL 등급 공격이 탐지될 때마다
-서버가 즉시 push 해준다. (노션 API 명세의 WS /ws/alerts 구현체)
-
-구현이 부담스러우면 이 파일은 나중으로 미루고,
-대신 프론트에서 GET /api/logs를 5~10초 간격으로 폴링하는 방식으로 시작해도 된다.
+/ws/alerts - 대시보드가 이 엔드포인트에 WebSocket으로 접속해두면,
+공격이 탐지될 때마다(app/proxy/proxy.py에서 호출) 실시간으로 이벤트를 받는다.
 """
-from typing import List
-
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-router = APIRouter(tags=["ws"])
+from app.storage.session_store import get_session
+from app.websocket.manager import manager
 
-
-class ConnectionManager:
-    def __init__(self) -> None:
-        self._connections: List[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket) -> None:
-        await websocket.accept()
-        self._connections.append(websocket)
-
-    def disconnect(self, websocket: WebSocket) -> None:
-        if websocket in self._connections:
-            self._connections.remove(websocket)
-
-    async def broadcast(self, message: dict) -> None:
-        # 연결이 끊긴 소켓에 보내다 에러 나는 경우를 대비해 하나씩 try 처리
-        for connection in list(self._connections):
-            try:
-                await connection.send_json(message)
-            except Exception:
-                self.disconnect(connection)
-
-
-# 다른 모듈(예: app/proxy/proxy.py)에서 import해서 broadcast 호출
-manager = ConnectionManager()
+router = APIRouter(tags=["websocket"])
 
 
 @router.websocket("/ws/alerts")
-async def websocket_alerts(websocket: WebSocket):
+async def websocket_alerts(websocket: WebSocket, token: str = ""):
+    # 💡 [조치] manager.connect() 안에서 어차피 websocket.accept()를 수행하므로 
+    # 여기서는 따로 accept()를 호출하지 않고, 토큰 유효성 검사 후 바로 매니저에게 위임합니다.
+    
+    session = get_session(token) if token else None
+    if session is None:
+        print(f"⚠️ [WebSocket 인증 실패] 유효하지 않거나 만료된 토큰입니다. 토큰: {token}")
+        
+        # 아직 accept()가 안 된 상태이므로, close()를 호출하기 전에 accept()를 살짝 해주고 닫는 것이
+        # 브라우저 단의 'before the connection is established' 에러를 막는 표준 규격입니다.
+        # 💡 4001은 프론트(useWebSocket.js)가 "인증 실패 → 재연결 시도 안 함"으로 처리하는 코드입니다.
+        # 표준 1008(정책 위반)을 쓰면 프론트가 일반 연결 끊김으로 오인해 계속 재시도하게 됩니다.
+        await websocket.accept()
+        await websocket.close(code=4001)
+        return
+
+    # 💡 manager.connect 내부에서 await websocket.accept()가 안전하게 실행됩니다.
     await manager.connect(websocket)
+    print(f"✅ [WebSocket 인증 성공] 관리자 세션 실시간 관제 연결 완료 (ID: {session.get('username', 'Unknown')})")
+
     try:
         while True:
-            # 클라이언트로부터 오는 메시지는 지금은 사용하지 않지만,
-            # 연결 유지를 위해 계속 받아만 둔다.
+            # 연결 상태 유지 및 단선 감지를 위한 루프
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+        print("ℹ️ [WebSocket] 관리자가 대시보드를 이탈하여 연결이 해제되었습니다.")
