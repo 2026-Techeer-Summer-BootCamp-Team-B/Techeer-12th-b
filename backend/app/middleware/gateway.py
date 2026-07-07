@@ -235,12 +235,17 @@ class GatewayMiddleware(BaseHTTPMiddleware):
         is_login_request = is_login_endpoint(request.url.path)
 
         # 1) 블랙리스트 확인 — 이미 차단된 IP는 바로 튕겨냄
-        if blacklist_store.is_blocked(client_ip):
-            return JSONResponse(status_code=403, content={"detail": "Access denied"})
+        # if blacklist_store.is_blocked(client_ip):
+        #    return JSONResponse(status_code=403, content={"detail": "Access denied"})
 
         # 2) Bad Bot 차단
         if _is_bad_bot(user_agent):
-            return JSONResponse(status_code=403, content={"detail": "Access denied"})
+            from app.models.schemas import IPBlacklistEntry
+            
+            blacklist_store.add_or_update(
+                IPBlacklistEntry(ip=client_ip, reason="bad_bot_detected")
+            )
+            # return JSONResponse(status_code=403, content={"detail": "Access denied"})
 
         # 2-1) CORS 위반 검사 — 화이트리스트에 없는 Origin에서 온 브라우저 요청 차단.
         #      정적 문서(/docs)나 헬스체크는 검사 대상에서 제외 (CORS_PROTECTED_PATH_PREFIXES 참고)
@@ -259,22 +264,23 @@ class GatewayMiddleware(BaseHTTPMiddleware):
             blacklist_store.add_or_update(
                 IPBlacklistEntry(ip=client_ip, reason="rate_limit_exceeded")
             )
-            return JSONResponse(status_code=429, content={"detail": "Too many requests"})
+            # return JSONResponse(status_code=429, content={"detail": "Too many requests"})
 
         # 4-2 사전 체크: 로그인 요청이면 body에서 계정을 먼저 뽑아서,
         # 이미 잠긴 계정이면 실제 백엔드에 넘기지도 않고 여기서 바로 차단한다.
         # (IP를 아무리 바꿔도 계정이 같으면 이 단계에서 막힘)
         login_identifier: Optional[str] = None
         if is_login_request and request.method in ("POST", "PUT"):
-            body_bytes = await request.body()  # Starlette가 내부적으로 캐싱해서 이후 재사용 가능
+            body_bytes = await request.body()
             content_type = request.headers.get("content-type", "")
             login_identifier = extract_login_identifier(body_bytes, content_type)
 
             if login_identifier and account_lockout_store.is_locked(login_identifier):
-                return JSONResponse(
-                    status_code=403,
-                    content={"detail": "Account temporarily locked due to repeated failed login attempts"},
-                )
+                print(f"[Gateway][TEST] 잠긴 계정 통과 (락아웃 상태 유지, IP 블랙리스트 X): {login_identifier}")
+                # return JSONResponse(
+                #     status_code=403,
+                #     content={"detail": "Account temporarily locked due to repeated failed login attempts"},
+                # )
 
         # 5) 에러 마스킹 — 하위 로직에서 예외가 터져도 상세 스택트레이스를 노출하지 않음
         try:
