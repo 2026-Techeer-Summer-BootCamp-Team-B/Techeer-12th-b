@@ -38,12 +38,12 @@
 
 | 기능 | 설명 |
 |------|------|
-| 실시간 트래픽 게이트웨이 | 모든 요청을 프록시로 가로채 1차 필터링 (Bad Bot 차단, Rate Limiting/Brute Force 차단) |
-| 데이터 정규화 & 우회 방어 | URL 인코딩 디코딩, 대소문자 통일, 파라미터 오염(HPP) 방어로 탐지 우회 차단 |
-| 서버·DB 공격 탐지 | SQL Injection, OS 커맨드 인젝션, Path Traversal 시그니처 기반 탐지 |
-| 클라이언트 공격 탐지 | XSS, 악성 파일 업로드(웹셸) 탐지 |
-| 중앙 로깅 | 탐지된 모든 공격 내역을 JSON 형태로 저장, 대시보드용 API 제공 |
-| SIEM 대시보드 | 실시간 공격 타임라인, Top 공격 IP, 공격 유형 분포, 최근 차단 로그 시각화 |
+| 실시간 트래픽 게이트웨이 | 모든 요청을 프록시로 가로채 1차 필터링 (Bad Bot / Rate Limiting / Brute Force / CORS 악용 탐지, 에러 마스킹) |
+| 데이터 정규화 & 우회 방어 | URL·HTML 엔티티 디코딩, 유니코드 정규화, 대소문자 통일, 파라미터 오염(HPP) 방어로 탐지 우회 차단 |
+| 시그니처 기반 공격 탐지 (20종) | SQLi, NoSQLi, XSS, OS Command Injection, Path Traversal, RFI, 악성 파일 업로드, SSTI, XXE, SSRF, Insecure Deserialization, Open Redirect, CRLF Injection, LDAP/XPath Injection, JWT 위조, CSRF, CORS 악용, HPP, 브루트포스 |
+| Falco 런타임 탐지 연동 | k3d(Kubernetes) 클러스터에 Falco를 DaemonSet으로 배포해 컨테이너 런타임 레벨 이상행위(민감 파일 접근, 쉘 실행 등)까지 탐지 |
+| 중앙 로깅 & 저장 | 탐지된 모든 공격을 Elasticsearch에 적재, 관리자 계정/룰/감사로그는 PostgreSQL, 세션·블랙리스트는 Redis에 저장 |
+| SIEM 대시보드 | WebSocket 기반 실시간 공격 타임라인, Top 공격 IP, 공격 유형 분포, MITRE ATT&CK 매핑, 최근 차단 로그 시각화 |
 
 <br>
 
@@ -52,15 +52,19 @@
 ```
 클라이언트 요청
     ↓
-[게이트웨이] Bad Bot 차단 / Rate Limiting / 에러 마스킹
+[게이트웨이] 블랙리스트 / Bad Bot / Rate Limiting / CORS 검증 / 브루트포스 / 에러 마스킹
     ↓
-[디코더] URL 디코딩 / 대소문자 통일 / HPP 방어
+[디코더] URL·HTML 엔티티 디코딩 / 유니코드 정규화 / HPP 방어
     ↓
-[탐지 엔진] SQLi·커맨드인젝션·경로탐색 / XSS·파일업로드 탐지
+[탐지 엔진] 시그니처 20종 매칭 (SQLi·NoSQLi·XSS·SSTI·XXE·SSRF·JWT위조·CSRF 등)
+    ↓                                    ↑
+[중앙 로깅: Elasticsearch]      [Falco DaemonSet] ← k3d 클러스터 런타임 이상행위 탐지
     ↓
-[중앙 로깅] 공격 로그 저장 (JSON)
+[WebSocket] 실시간 알림 브로드캐스트
     ↓
-[SIEM 대시보드] 실시간 시각화
+[SIEM 대시보드] 실시간 시각화 (React)
+
+부가 저장소: PostgreSQL(관리자 계정·룰·감사로그) / Redis(세션·블랙리스트·계정 잠금)
 ```
 
 <br>
@@ -69,22 +73,26 @@
 
 **Backend**
 ```
-Python, FastAPI
+Python, FastAPI, Uvicorn, SQLAlchemy
 ```
 
 **Detection**
 ```
-정규표현식(Regex) 기반 시그니처 매칭
+정규표현식(Regex) 기반 시그니처 매칭 + 구조적 판단(JWT alg:none, CSRF, XXE 엔티티 폭탄, Open Redirect 화이트리스트 비교 등)
+Falco (컨테이너 런타임 이상행위 탐지, k3d DaemonSet)
 ```
 
 **Frontend**
 ```
-추가 예정
+React 19, Vite, Tailwind CSS, Recharts
 ```
 
-**Database / Logging**
+**Infra / Database / Logging**
 ```
-JSON 기반 로그 저장 (attack_log.jsonl)
+Elasticsearch (공격 로그 저장·집계)
+PostgreSQL (관리자 계정 / DetectionRule / Target / AllowList / AuditLog)
+Redis (세션 / IP 블랙리스트 / 계정 잠금)
+k3d(Kubernetes) + Helm (Falco 배포)
 ```
 
 **협업 도구**
@@ -100,8 +108,8 @@ Git / GitHub / Notion / Discord
 
 | 이름 | 역할 | 담당 업무 | 담당 파일 |
 |------|------|-----------|-----------|
-| 이용욱 | 총괄 / 게이트웨이 & 트래픽 컨트롤러 | 전체 아키텍처 총괄, 팀 조율, 웹 서버 뼈대 구축, Bad Bot 차단, Rate Limiting/Brute Force 차단, 에러 마스킹 | `main.py`, `app/config.py`, `app/middleware/gateway.py`, `app/api/blacklist.py`, `app/proxy/proxy.py`(예정) |
-| 서동영 | 프론트엔드 관제 대시보드 | 보안 모니터링 대시보드 UI/UX, 실시간 경고창(Alert), 공격 통계 표/그래프 | `frontend/`(예정), `app/api/ws.py`(프론트 연동) |
+| 이용욱 | 총괄 / 게이트웨이 & 트래픽 컨트롤러 | 전체 아키텍처 총괄, 팀 조율, 웹 서버 뼈대 구축, Bad Bot 차단, Rate Limiting/Brute Force 차단, 에러 마스킹 | `main.py`, `app/config.py`, `app/middleware/gateway.py`, `app/api/blacklist.py`, `app/proxy/proxy.py` |
+| 서동영 | 프론트엔드 관제 대시보드 | 보안 모니터링 대시보드 UI/UX, 실시간 경고창(Alert), 공격 통계 표/그래프 | `frontend/`, `app/api/ws.py`(프론트 연동) |
 | 하지환 | 데이터 정규화 & 우회 방어 | 인코딩 디코딩, 대소문자 통일, 파라미터 오염(HPP) 방어 | `app/middleware/decoder.py` |
 | 윤재영 | 서버 & DB 보안 분석관 | SQL Injection, OS 커맨드 인젝션, 경로 탐색(Path Traversal) 방어 | `app/detection/signatures.py`(SQLi/OS Command Injection/Path Traversal), `app/detection/engine.py`(서버·DB 탐지 부분), `app/api/rules.py`, `app/storage/rules_store.py`(서버·DB 룰 공동) |
 | 심다움 | 클라이언트 보안 분석관 & 로그 마스터 | XSS 방어, 악성 파일 업로드 차단, 중앙 로깅 저장소 운영 및 API 제공 | `app/detection/signatures.py`(XSS/파일 업로드), `app/detection/engine.py`(클라이언트 탐지 부분), `app/api/logs.py`, `app/api/stats.py`, `app/api/ws.py`(알림 트리거), `app/storage/log_store.py`, `app/api/rules.py`, `app/storage/rules_store.py`(클라이언트 룰 공동) |
@@ -146,6 +154,14 @@ brew install k3d kubectl helm
 ```
 > 설치 직후 새 터미널을 열어야 PATH가 반영됩니다.
 
+> 💡 **자동화 스크립트**: 아래 1)/3)번(k3d 클러스터 생성 + Falco 배포)은 `scripts/deploy-falco.ps1`
+> (Windows) 또는 `scripts/deploy-falco.sh`(macOS/Linux)로 한 번에 실행할 수 있습니다.
+> 이미 클러스터/Falco가 떠 있으면 그대로 두고, 없는 것만 골라서 멱등하게 생성/설치합니다.
+> ```powershell
+> .\scripts\deploy-falco.ps1
+> ```
+> 무슨 일이 일어나는지 직접 따라가고 싶다면 아래 1)~3)번을 수동으로 진행해도 결과는 동일합니다.
+
 ### 1) k3d 클러스터 생성
 저장소 루트의 `k3d-cluster-config.yaml`로 서버 1개 + 에이전트 2개(총 3노드) 클러스터를 만듭니다.
 Falco는 DaemonSet(노드마다 하나씩 뜨는 파드)이라, 노드가 여러 개여야 "노드마다 하나씩 배포"되는
@@ -182,7 +198,7 @@ kubectl get daemonset -n falco
 > Docker 컨테이너라 Docker Desktop이 주입하는 `host.docker.internal`을 그대로 씁니다.
 
 ### 4) 인프라를 로컬 포트로 연결
-터미널 3개를 열어 각각 계속 실행해 둡니다 (`backend/.env`가 이미 아래 포트 기준으로 설정되어 있어 추가 설정 불필요):
+터미널 3개를 열어 각각 계속 실행해 둡니다:
 ```bash
 kubectl port-forward svc/elasticsearch 9200:9200
 kubectl port-forward svc/postgres 5432:5432
@@ -195,6 +211,12 @@ cd backend
 python -m venv .venv
 # Windows: .venv\Scripts\activate   /   macOS·Linux: source .venv/bin/activate
 pip install -r requirements.txt
+
+# .env는 git에 커밋되지 않으므로(민감정보 포함 가능) 최초 1회 예시 파일을 복사해서 만들어야 함.
+# config.py의 기본값은 k8s 서비스명(postgres/redis/elasticsearch) 기준이라, 로컬에서
+# port-forward로 localhost에 연결할 거면 반드시 이 파일이 있어야 DB 연결에 성공한다.
+# Windows: copy .env.example .env   /   macOS·Linux: cp .env.example .env
+cp .env.example .env
 
 # 최초 1회만: 테이블 생성 + 관리자 계정 시딩 (admin / changeme123)
 python -m app.init_db
@@ -223,6 +245,11 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```bash
 cd frontend
 npm install
+
+# .env도 마찬가지로 git에 커밋되지 않음 — 최초 1회 예시 파일을 복사해서 만들어야 함.
+# Windows: copy .env.example .env   /   macOS·Linux: cp .env.example .env
+cp .env.example .env
+
 npm run dev
 ```
 확인: http://localhost:5173 (`frontend/.env`의 `VITE_API_URL`이 백엔드 포트(8000)와 일치해야 함)
@@ -257,7 +284,7 @@ BACKEND_URL=http://localhost:8000 EVENTS_PER_SECOND=5 python dummy_generator.py
    5)번의 `--host 0.0.0.0` 여부와 백엔드가 실제로 떠 있는지부터 확인하세요.)
 5. Elasticsearch 적재를 직접 확인:
    ```bash
-   curl "http://localhost:9200/attack-logs/_search?sort=timestamp:desc&size=5&pretty"
+   curl "http://localhost:9200/attack_logs/_search?sort=timestamp:desc&size=5&pretty"
    ```
 
 ### 종료 / 정리

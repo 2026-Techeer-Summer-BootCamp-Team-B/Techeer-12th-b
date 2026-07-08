@@ -7,9 +7,12 @@
 정규식 탐지를 그대로 통과해버림.
 """
 import html
+import re
 import unicodedata
 import urllib.parse
 from typing import Dict
+
+_MULTIPART_BOUNDARY_PATTERN = re.compile(r'boundary=(?:"([^"]+)"|([^;\s]+))', re.IGNORECASE)
 
 
 def normalize_text(raw_text: str) -> str:
@@ -33,6 +36,32 @@ def normalize_text(raw_text: str) -> str:
 
     text = unicodedata.normalize("NFKC", text)
     return text.lower()
+
+
+def strip_multipart_boundary_lines(body_text: str, content_type: str) -> str:
+    """
+    multipart/form-data 요청은 파트 구분을 위해 "--<boundary>" 줄이 바디 전체에
+    반복해서 등장한다. 이 대시(--)가 SQLi 주석 종료 패턴(sqli_comment_terminator: --|#|/*)과
+    우연히 일치해서, 파일 업로드 요청이 통째로 SQLi로 먼저 걸려버려 그 뒤에 있는
+    file_upload 시그니처(filename=...php)까지 도달하지도 못하는 문제가 있었다
+    (실제로 정상적인 이미지 업로드조차 SQLi 오탐이 났다).
+
+    Content-Disposition/필드 값 등 실제 내용은 그대로 두고, Content-Type 헤더에 선언된
+    정확한 boundary 토큰과 일치하는 줄만 제거한다 — 임의의 "--"로 시작하는 줄을 다 지우면
+    공격자가 필드 값 자체를 "-- DROP TABLE ..." 처럼 줄 맨 앞에 넣는 진짜 SQLi까지
+    같이 지워버릴 수 있어서, boundary 토큰 매칭을 반드시 정확하게 해야 한다.
+    """
+    match = _MULTIPART_BOUNDARY_PATTERN.search(content_type)
+    if not match:
+        return body_text
+
+    boundary = (match.group(1) or match.group(2) or "").strip().lower()
+    if not boundary:
+        return body_text
+
+    # body_text는 이미 normalize_text()에서 소문자화됐으므로 boundary도 맞춰서 소문자로 비교
+    boundary_line_pattern = re.compile(rf"(?m)^--{re.escape(boundary)}(--)?[^\n]*$")
+    return boundary_line_pattern.sub("", body_text)
 
 
 def normalize_query_params(raw_query_params: Dict[str, list]) -> Dict[str, str]:

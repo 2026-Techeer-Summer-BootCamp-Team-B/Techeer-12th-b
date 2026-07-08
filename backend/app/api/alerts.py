@@ -73,13 +73,21 @@ async def receive_falco_alert(request: Request):
         attack_type, mitre_technique_id = _infer_falco_mapping(rule_name)
 
         # 4. 규격화된 AttackLog 인스턴스 빌드
+        #
+        # 주의: dict.get(key, default)는 key가 아예 없을 때만 default를 쓴다.
+        # 실제 Falco 이벤트는 해당 없는 output_fields를 생략하지 않고 null로 채워서 보내는
+        # 경우가 흔해서(예: 파드와 무관한 호스트 레벨 이벤트의 "k8s.pod.name": null),
+        # .get()만 쓰면 default로 안 떨어지고 None이 그대로 들어가 AttackLog(source_ip=str)
+        # 검증에서 터져서 이벤트 자체가 통째로 유실됐다. `or`로 None/빈 문자열까지 걸러낸다.
+        source_ip = output_fields.get("k8s.pod.name") or output_fields.get("container.id") or "K8s-Host"
+        target_endpoint = output_fields.get("fd.name") or "System Call / Host-Space"
+
         attack_log = AttackLog(
             id=str(uuid.uuid4()),
             timestamp=datetime.utcnow(),
-            # 수신한 Pod 이름이 있다면 할당, 없으면 컨테이너 ID나 K8s-Host 처리
-            source_ip=output_fields.get("k8s.pod.name", output_fields.get("container.id", "K8s-Host")),
+            source_ip=source_ip,
             attack_type=attack_type,
-            target_endpoint=output_fields.get("fd.name", "System Call / Host-Space"),
+            target_endpoint=target_endpoint,
             http_method="EXEC",  # 커널 레벨 시스템 콜 추적임을 명시
             payload_snippet=falco_raw.get("output", "No output text")[:200],  # 200자 제한 방어
             user_agent=f"Falco Agent (proc: {output_fields.get('proc.name', 'Unknown')})",

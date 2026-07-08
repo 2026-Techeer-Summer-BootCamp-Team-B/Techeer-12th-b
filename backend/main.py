@@ -3,24 +3,7 @@
 
 실행 방법:
     uvicorn main:app --reload
-
-구조:
-    클라이언트 요청
-        -> GatewayMiddleware (이용욱: 블랙리스트/Rate Limit/Bad Bot/에러마스킹)
-        -> /proxy/{path} (이용욱: 디코더+탐지엔진 거쳐서 실제 서비스로 전달)
-        -> /api/logs, /api/stats, /api/blacklist, /api/rules (조회/관리 API)
-        -> /ws/alerts (대시보드 실시간 알림)
 """
-import sys
-
-# Windows 콘솔의 기본 코드페이지(cp949 등)는 로그 곳곳에 쓰인 이모지(✅🚨❌ 등)를 인코딩하지 못해
-# print() 호출 자체가 UnicodeEncodeError로 죽는다. 예를 들어 app/api/ws.py는 인증 성공 직후
-# print에서 죽어서 WebSocket이 열리자마자 서버 쪽 예외로 끊기는 문제가 있었다.
-# stdout/stderr를 UTF-8로 강제해서 어떤 콘솔 코드페이지에서도 안전하게 만든다.
-if sys.stdout.encoding.lower() != "utf-8":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -39,25 +22,24 @@ app = FastAPI(
 @app.on_event("startup")
 def on_startup():
     ensure_index_exists()
-# 대시보드(프론트엔드)가 다른 포트/도메인에서 API를 호출할 수 있도록 허용.
-#
-# allow_origins는 반드시 화이트리스트(settings.allowed_origins, .env에서 설정)로 관리한다.
-# "*"(전체 허용)로 두면, 인증정보를 쓰는 API가 생겼을 때 아무 외부 사이트에서나
-# 우리 API를 대신 호출해서 사용자 데이터를 읽어갈 수 있는 CORS Misconfiguration 취약점이 된다.
-# (자세한 시나리오는 app/middleware/gateway.py의 check_cors_violation 주석 참고)
-#
-# 참고: 여기 CORSMiddleware는 "정상적인 브라우저 preflight 요청"을 처리해주는 표준 기능이고,
-# 화이트리스트에 없는 Origin이 악의적으로 계속 시도하는 것을 "탐지해서 로그로 남기는" 건
-# GatewayMiddleware의 check_cors_violation()이 담당한다 — 둘이 하는 일이 달라서 같이 필요하다.
+
+# 💡 [코드 해결 - 중요] 
+# FastAPI의 미들웨어는 나중에 추가된 것(아래에 있는 것)이 가장 먼저 실행됩니다.
+# 따라서 모든 보안/비정상 트래픽을 필터링하는 GatewayMiddleware를 먼저 적재하고,
+# 표준 브라우저 교차 출처를 처리하는 CORSMiddleware를 가장 아래에 적재해야 합니다.
+# 이렇게 해야 브라우저 preflight 및 웹소켓 핸드셰이크 시 CORS 헤더가 유실되지 않습니다.
+
+# 1. 먼저 게이트웨이 미들웨어를 장착합니다. (나중에 실행됨)
+app.add_middleware(GatewayMiddleware)
+
+# 2. CORS 미들웨어를 가장 마지막에 장착합니다. (가장 먼저 실행되어 모든 요청에 CORS 헤더 보장)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
+    allow_credentials=True, # 💡 웹소켓 및 인증 정보 통신을 위해 True로 확보하는 것이 안정적입니다.
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# 게이트웨이 미들웨어 등록 (모든 요청이 가장 먼저 여기를 통과)
-app.add_middleware(GatewayMiddleware)
 
 # 라우터 등록
 app.include_router(proxy_router, prefix="/proxy")

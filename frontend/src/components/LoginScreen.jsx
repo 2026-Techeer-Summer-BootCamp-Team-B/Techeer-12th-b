@@ -17,8 +17,16 @@ export default function LoginScreen({ onLogin }) {
         method: "POST",
         body: JSON.stringify({ username, password }),
       });
-      setToken(data.token);
-      onLogin(data);
+      
+      // 백엔드가 token 혹은 access_token 어떤 키로 주든 안전하게 파싱합니다.
+      const targetToken = data.token || data.access_token;
+      
+      if (!targetToken) {
+        throw new Error("서버 응답에 유효한 인증 토큰이 포함되어 있지 않습니다.");
+      }
+
+      setToken(targetToken); // ids_platform_token 키로 올바르게 저장
+      onLogin();             // App.jsx에 로그인 완료 통보 (이제 data를 구태여 넘기지 않아도 App이 직접 최신 토큰을 읽어옵니다)
     } catch (err) {
       setError(err.message);
     } finally {

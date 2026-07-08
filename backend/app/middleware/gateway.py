@@ -2,11 +2,14 @@
 담당: 이용욱 (게이트웨이 & 트래픽 컨트롤러)
 
 시스템의 입구를 담당하는 미들웨어.
-1) 블랙리스트 IP 즉시 차단
-2) Rate Limiting (짧은 시간에 너무 많은 요청 차단)
-3) Bad Bot 차단 (알려진 해킹 툴 User-Agent 차단)
-4) CORS 위반 차단 (화이트리스트에 없는 Origin에서의 브라우저 요청 차단)
-5) Brute Force 탐지 — 3단계로 방어
+※ 현재 테스트 진행 중이라 1)/2)/3)/5)는 탐지·등록(블랙리스트/계정 잠금)까지만 하고
+  실제 차단(return 403 등)은 전부 비활성화 상태다 (dispatch 안의 [TEST] 주석 참고).
+  4)는 CORS는 브라우저 표준 동작이라 항상 켜둬야 해서 예외적으로 차단이 활성화되어 있다.
+1) 블랙리스트 IP 즉시 차단 (비활성화)
+2) Rate Limiting (짧은 시간에 너무 많은 요청 차단) — 등록만, 차단 비활성화
+3) Bad Bot 차단 (알려진 해킹 툴 User-Agent 차단) — 등록만, 차단 비활성화
+4) CORS 위반 차단 (화이트리스트에 없는 Origin에서의 브라우저 요청 차단) — 활성화 상태
+5) Brute Force 탐지 — 3단계로 방어, 등록(블랙리스트/계정 잠금)까지만 하고 차단은 비활성화
    5-1) IP 기준: 같은 IP의 반복된 로그인 실패
    5-2) 계정 기준: IP를 바꿔가며 같은 계정만 노리는 경우 (IP 로테이션 대응)
    5-3) 시스템 전체 기준: IP/계정 다 분산시켜서 도는 대규모 공격 조짐 감지 (경보만, 자동차단 X)
@@ -269,9 +272,18 @@ class GatewayMiddleware(BaseHTTPMiddleware):
             )
             # return JSONResponse(status_code=429, content={"detail": "Too many requests"})
 
-        # 4-2 사전 체크: 로그인 요청이면 body에서 계정을 먼저 뽑아서,
-        # 이미 잠긴 계정이면 실제 백엔드에 넘기지도 않고 여기서 바로 차단한다.
-        # (IP를 아무리 바꿔도 계정이 같으면 이 단계에서 막힘)
+        # 4-1 사전 체크: 브루트포스(IP 기준)로 이미 블랙리스트에 올랐는지 확인.
+        # [TEST] 테스트 중에는 실제 차단(return 403)을 하지 않고 등록/로그만 남긴다.
+        # 등록 자체는 아래 4) Brute Force 판정 블록에서 계속 일어나므로 탐지는 그대로 동작한다.
+        if is_login_request and blacklist_store.is_blocked(client_ip):
+            print(f"[Gateway][TEST] 브루트포스로 블랙리스트에 오른 IP의 로그인 시도 통과 (차단 비활성화): {client_ip}")
+            # return JSONResponse(
+            #     status_code=403,
+            #     content={"detail": "Too many failed login attempts from this IP. Try again later."},
+            # )
+
+        # 4-2 사전 체크: 로그인 요청이면 body에서 계정을 먼저 뽑아서 잠금 여부를 확인한다.
+        # [TEST] 마찬가지로 테스트 중에는 실제 차단하지 않고 통과시킨다.
         login_identifier: Optional[str] = None
         if is_login_request and request.method in ("POST", "PUT"):
             body_bytes = await request.body()
@@ -279,7 +291,7 @@ class GatewayMiddleware(BaseHTTPMiddleware):
             login_identifier = extract_login_identifier(body_bytes, content_type)
 
             if login_identifier and account_lockout_store.is_locked(login_identifier):
-                print(f"[Gateway][TEST] 잠긴 계정 통과 (락아웃 상태 유지, IP 블랙리스트 X): {login_identifier}")
+                print(f"[Gateway][TEST] 잠긴 계정 통과 (락아웃 상태 유지, 차단 비활성화): {login_identifier}")
                 # return JSONResponse(
                 #     status_code=403,
                 #     content={"detail": "Account temporarily locked due to repeated failed login attempts"},

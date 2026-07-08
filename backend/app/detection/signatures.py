@@ -146,8 +146,14 @@ SIGNATURES = [
     ("insecure_deserialization", "deser_yaml_unsafe_tag", re.compile(r"(?i)!!python/(object|module|name)"), "CRITICAL"),
 
     # --- CRLF Injection ---
-    # 디코딩된 CR/LF 뒤에 응답 헤더를 이어붙이려는 시도 (HTTP Response/Header Splitting)
-    ("crlf_injection", "crlf_header_injection", re.compile(r"(?i)[\r\n]\s*(set-cookie|location|content-length|content-type|x-xss-protection|x-forwarded-host|refresh|www-authenticate)\s*:"), "CRITICAL"),
+    # 디코딩된 CR/LF 뒤에 응답 헤더를 이어붙이려는 시도 (HTTP Response/Header Splitting).
+    # content-type/content-length는 일부러 뺐다 — engine.py가 body_text와 headers_text를
+    # 합쳐서 검사하는데, headers_text 자체가 "user-agent: ...\ncontent-type: ..."처럼
+    # 실제 요청 헤더를 줄바꿈으로 이어붙인 문자열이라, Content-Type이 있는 평범한 POST
+    # 요청마다 이 룰이 자기 자신(정상 헤더)에 걸려 전부 CRLF 공격으로 오탐났었다.
+    # set-cookie/location 등은 클라이언트가 보내는 요청 헤더로는 등장하지 않는
+    # "응답 전용" 헤더라서 이런 자기충돌이 없다.
+    ("crlf_injection", "crlf_header_injection", re.compile(r"(?i)[\r\n]\s*(set-cookie|location|x-xss-protection|refresh|www-authenticate)\s*:"), "CRITICAL"),
     # 디코더를 우회해서 인코딩된 형태 그대로 들어온 경우에 대한 방어선
     ("crlf_injection", "crlf_encoded_sequence", re.compile(r"(?i)%0d%0a|%0d%0d|%0a%0a"), "MEDIUM"),
 

@@ -21,7 +21,7 @@ from fastapi import APIRouter, Request, Response
 
 from app.config import settings
 from app.detection.engine import inspect_request
-from app.middleware.decoder import normalize_query_params, normalize_text
+from app.middleware.decoder import normalize_query_params, normalize_text, strip_multipart_boundary_lines
 from app.models.schemas import AttackLog, AttackType, RiskLevel
 from app.storage.log_store import add_log as save_log
 from app.websocket.manager import manager
@@ -63,6 +63,10 @@ _EXCLUDED_RESPONSE_HEADERS = {
 async def proxy_request(path: str, request: Request):
     body_bytes = await request.body()
     body_text = normalize_text(body_bytes.decode("utf-8", errors="ignore"))
+    # multipart/form-data 바디의 "--<boundary>" 구분선이 sqli_comment_terminator(--)에
+    # 우연히 걸려서, 파일 업로드가 전부 SQLi로 먼저 분류되고 file_upload 시그니처까지
+    # 도달하지 못하는 문제가 있었다 (경계선만 정확히 제거, 실제 필드 값은 그대로 유지).
+    body_text = strip_multipart_boundary_lines(body_text, request.headers.get("content-type", ""))
 
     # 헤더는 dict로 펼쳐서 탐지 대상 문자열로 만듦 (JWT alg:none 탐지가 여길 봄).
     # 단, Accept/Accept-Encoding 같은 브라우저 표준 헤더는 제외 - 시그니처 오탐 방지.
