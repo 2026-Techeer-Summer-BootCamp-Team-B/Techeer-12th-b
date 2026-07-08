@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { API_BASE_URL } from "../lib/api";
 
 const MAX_RECONNECT_ATTEMPTS = 10;
 const RECONNECT_BASE_DELAY = 1000; // 1초
@@ -29,7 +30,12 @@ export const useWebSocket = (token, onMessageCallback) => {
       return;
     }
 
-    const wsUrl = `ws://localhost:8000/ws/alerts?token=${encodeURIComponent(token)}`;
+    // API_BASE_URL(lib/api.js, VITE_API_URL로 설정)을 그대로 ws(s)로 바꿔서 써야
+    // REST 호출과 같은 백엔드를 가리킨다. 예전에는 "ws://localhost:8000"으로 하드코딩되어 있어서
+    // 백엔드가 다른 포트/도메인(예: VITE_API_URL이 가리키는 배포 환경)에 떠 있으면
+    // REST API는 정상 동작해도 실시간 알림 웹소켓만 조용히 연결 실패했다.
+    const wsBase = API_BASE_URL.replace(/^http/, "ws");
+    const wsUrl = `${wsBase}/ws/alerts?token=${encodeURIComponent(token)}`;
     const ws = new WebSocket(wsUrl);
     // React StrictMode의 개발 모드 mount->unmount->remount 시, 아직 CONNECTING인
     // 소켓을 바로 close()하면 "WebSocket is closed before the connection is

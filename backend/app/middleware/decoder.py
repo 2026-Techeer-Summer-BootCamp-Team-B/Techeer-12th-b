@@ -6,23 +6,32 @@
 이 계층이 없으면 %27, %3Cscript%3E 같은 인코딩된 페이로드가
 정규식 탐지를 그대로 통과해버림.
 """
+import html
+import unicodedata
 import urllib.parse
 from typing import Dict
 
 
 def normalize_text(raw_text: str) -> str:
     """
-    1) URL 디코딩을 반복 적용 (이중 인코딩 우회 방지: %2527 -> %27 -> ')
-    2) 대소문자를 소문자로 통일 (sCrIpt -> script)
+    1) URL 디코딩 + HTML 엔티티 디코딩을 번갈아 반복 적용
+       (이중 인코딩 우회 방지: %2527 -> %27 -> ' / &amp;lt; -> &lt; -> <)
+       두 인코딩이 섞여서 오는 경우(예: %26lt%3B = URL인코딩된 "&lt;")도 있어서
+       한쪽만 디코딩하고 끝내면 안 되고 두 방식을 같이 반복해야 한다.
+    2) 유니코드 정규화(NFKC) — 전각문자(＜ｓｃｒｉｐｔ＞) 같은 유니코드 트릭으로
+       정규식 필터를 우회하려는 시도를 일반 ASCII 형태로 되돌림.
+    3) 대소문자를 소문자로 통일 (sCrIpt -> script)
     탐지는 이 정규화된 문자열을 대상으로 수행한다.
     """
     text = raw_text
     # 최대 3번까지 디코딩 반복 (이중/삼중 인코딩 우회 대비)
     for _ in range(3):
-        decoded = urllib.parse.unquote(text)
+        decoded = html.unescape(urllib.parse.unquote(text))
         if decoded == text:
             break
         text = decoded
+
+    text = unicodedata.normalize("NFKC", text)
     return text.lower()
 
 

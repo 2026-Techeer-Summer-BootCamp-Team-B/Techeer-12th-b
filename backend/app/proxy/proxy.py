@@ -22,7 +22,7 @@ from fastapi import APIRouter, Request, Response
 from app.config import settings
 from app.detection.engine import inspect_request
 from app.middleware.decoder import normalize_query_params, normalize_text
-from app.models.schemas import RiskLevel
+from app.models.schemas import AttackLog, AttackType, RiskLevel
 from app.storage.log_store import add_log as save_log
 from app.websocket.manager import manager
 
@@ -40,6 +40,7 @@ _INSPECTED_HEADER_NAMES = {
     "cookie",
     "x-forwarded-for",
     "referer",
+    "origin",
     "user-agent",
     "content-type",
     "x-api-key",
@@ -100,6 +101,27 @@ async def proxy_request(path: str, request: Request):
     raw_query_params: dict = {}
     for key in request.query_params.keys():
         raw_query_params[key] = request.query_params.getlist(key)
+
+    # HPP (HTTP Parameter Pollution) 탐지 — 같은 이름의 파라미터가 여러 번 오는 것 자체가
+    # WAF 우회 시도(첫 번째 값은 정상, 뒤에 숨긴 값에 실제 공격 페이로드)로 흔히 쓰인다.
+    # normalize_query_params()가 첫 번째 값만 채택해서 실제 요청은 안전하게 무력화되므로
+    # 여기서는 강제 차단(403)까지는 하지 않고 시도 자체만 기록한다.
+    polluted_params = {key: values for key, values in raw_query_params.items() if len(values) > 1}
+    if polluted_params:
+        hpp_log = AttackLog(
+            source_ip=client_ip,
+            attack_type=AttackType.HPP,
+            target_endpoint=f"/{path}",
+            http_method=request.method,
+            payload_snippet=str(polluted_params)[:200],
+            user_agent=request.headers.get("user-agent"),
+            matched_rule_id="hpp_duplicate_query_param",
+            blocked=False,
+            risk_level=RiskLevel.MEDIUM,
+        )
+        save_log(hpp_log)
+        await manager.broadcast({"event": "attack_detected", "data": hpp_log.model_dump(mode="json")})
+
     clean_query_params = normalize_query_params(raw_query_params)
 
     target_url = f"{settings.target_service_url}/{path}"

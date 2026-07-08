@@ -15,7 +15,7 @@
 from passlib.context import CryptContext
 
 from app.database import Base, engine, SessionLocal
-from app.models.rdbms_models import User, Target, AuditLog  # noqa: F401 (create_all이 인식하도록 import)
+from app.models.rdbms_models import User, Target, DetectionRule, AllowList, AuditLog  # noqa: F401 (create_all이 인식하도록 import)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 

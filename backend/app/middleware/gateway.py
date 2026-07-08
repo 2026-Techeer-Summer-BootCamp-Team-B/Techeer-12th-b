@@ -34,8 +34,11 @@ from app.storage.log_store import add_log as save_log
 # 알려진 해킹 툴 / 스캐너의 User-Agent 키워드 (필요시 계속 추가)
 BAD_BOT_USER_AGENTS = ["sqlmap", "nikto", "nmap", "masscan", "acunetix", "curl/7.0"]
 
-# 로그인/인증 관련 엔드포인트로 간주할 경로 키워드
-LOGIN_PATH_KEYWORDS = ["login", "signin", "sign-in", "auth"]
+# 로그인 시도로 간주할 엔드포인트 경로 키워드.
+# "auth"는 일부러 뺐다 — /api/auth/me, /api/auth/logout까지 다 걸려서, 만료된 토큰으로
+# GET /api/auth/me를 호출하기만 해도(흔한 정상 상황) 401이 브루트포스 실패 카운트에
+# 잡히는 오탐이 있었다. "login"만으로도 실제 로그인 엔드포인트(/api/auth/login)는 그대로 잡힌다.
+LOGIN_PATH_KEYWORDS = ["login", "signin", "sign-in"]
 
 # 로그인 요청 body에서 계정 식별자로 인식할 필드 이름 후보
 LOGIN_IDENTIFIER_FIELDS = ["email", "username", "user", "id", "account"]
@@ -288,7 +291,9 @@ class GatewayMiddleware(BaseHTTPMiddleware):
 
             # 4) Brute Force 판정 — 로그인 엔드포인트에서 실패(401/403) 응답이 나온 경우에만 집계.
             #    응답을 봐야 판단 가능하므로 call_next() 이후 시점에서 검사한다.
-            if is_login_request and response.status_code in LOGIN_FAILURE_STATUS_CODES:
+            #    method를 POST/PUT으로 한정하는 이유: 위의 계정 식별 단계와 동일한 기준을 써야
+            #    "실제 로그인 시도"만 집계된다 (그 외 메서드는 브루트포스 대상이 아님).
+            if is_login_request and request.method in ("POST", "PUT") and response.status_code in LOGIN_FAILURE_STATUS_CODES:
                 from app.models.schemas import IPBlacklistEntry  # 순환 import 방지용 지연 임포트
 
                 # 4-1: IP 기준

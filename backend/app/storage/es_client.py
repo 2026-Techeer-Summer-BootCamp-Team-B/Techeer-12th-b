@@ -24,7 +24,7 @@ ATTACK_LOG_MAPPING = {
             "http_method": {"type": "keyword"},
             "payload_snippet": {"type": "text"},
             "user_agent": {"type": "text"},
-            "matched_rule_name": {"type": "keyword"},
+            "matched_rule_id": {"type": "keyword"},
             "mitre_technique_id": {"type": "keyword"},
             "blocked": {"type": "boolean"},
             "risk_level": {"type": "keyword"},
