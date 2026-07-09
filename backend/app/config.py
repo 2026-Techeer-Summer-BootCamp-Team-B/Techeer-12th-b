@@ -10,25 +10,22 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # 담당: 이용욱 (게이트웨이)
-    # 정상 트래픽을 최종적으로 전달할 실제 서비스 주소
-    target_service_url: str = "http://localhost:8080"
-    elasticsearch_url: str = "http://elasticsearch:9200"
+    # 정상 트래픽을 최종적으로 전달할 실제 서비스 주소.
+    # 이제 백엔드 자체가 k3d 클러스터 안에 Pod로 떠서, k8s DNS로 juice-shop 서비스에 접근한다.
+    target_service_url: str = "http://juice-shop:3000"
 
     # Rate Limiting 설정 (담당: 이용욱)
     rate_limit_window_seconds: int = 60
     rate_limit_max_requests: int = 30
 
-    # app/config.py의 Settings 클래스 안에 아래 필드를 추가하세요.
-    # (기존 target_service_url, rate_limit_* 등 필드들 밑에 이어서 넣으면 됩니다)
- 
-    # PostgreSQL 접속 정보 (담당: 이용욱)
-    # k8s 안에서는 서비스 이름(postgres)으로 접근 - docker-compose 로컬 실행 시에도 동일하게 동작하도록
-    # 서비스 이름을 그대로 씀 (k8s DNS가 이 이름을 postgres pod의 ClusterIP로 해석해줌)
-    database_url: str = "postgresql://ids_admin:devpassword123@postgres:5432/ids_platform"
- 
-    # Redis 접속 정보 (담당: 이용욱)
+    # Redis 접속 정보 (담당: 이용욱) - k8s DNS로 redis 서비스에 접근
     redis_url: str = "redis://redis:6379/0"
- 
+
+    # OTel Collector 접속 정보 (담당: 심다움) - 탐지된 AttackLog를 여기로 OTLP(HTTP) push.
+    # otel-collector-deployment.yaml이 만드는 클러스터 내부 Service 이름을 그대로 씀.
+    # 필드명을 OTel 표준 환경변수(OTEL_EXPORTER_OTLP_ENDPOINT)에 그대로 맞춰서
+    # pydantic-settings가 별도 alias 없이 자동으로 매핑하게 함.
+    otel_exporter_otlp_endpoint: str = "http://otel-collector:4318"
 
     # Brute Force 탐지 설정 (담당: 이용욱 / 하지환)
     brute_force_max_failures: int = 5
@@ -44,10 +41,6 @@ class Settings(BaseSettings):
     # 이 목록에 있는 IP에서 직접 연결된 요청만 X-Forwarded-For 헤더를 신뢰한다.
     # 비워두면(로컬 개발 등) X-Forwarded-For를 아예 무시하고 직접 연결 IP만 사용.
     trusted_proxies_raw: str = ""
-
-    # 로그/블랙리스트 저장 경로 (담당: 윤재영)
-    attack_log_path: str = "./data/attack_log.jsonl"
-    blacklist_path: str = "./data/blacklist.json"
 
     class Config:
         env_file = ".env"

@@ -1,0 +1,56 @@
+# WAF 게이트웨이(이 리포지토리의 backend/) 배포 매니페스트.
+#
+# 예전에는 로컬(uvicorn)에서 돌리고 k3d 안의 Falco/ES/Postgres/Redis만 port-forward로
+# 연결했지만, 이제 WAF 자체가 "① 관문" 계층으로서 otel-collector에 로그를 push해야 하므로
+# 클러스터 안에 Pod로 들어와 otel-collector Service에 클러스터 내부망으로 바로 접근한다.
+#
+# 사용법 (저장소 루트에서, backend/Dockerfile로 이미지를 먼저 빌드해 k3d에 주입한 뒤):
+#   docker build -t techeer-waf-backend:latest backend/
+#   k3d image import techeer-waf-backend:latest -c techeer-ids
+#   kubectl apply -f backend/backend-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          image: techeer-waf-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: TARGET_SERVICE_URL
+              value: "http://juice-shop:3000"
+            - name: REDIS_URL
+              value: "redis://redis:6379/0"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector:4318"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+spec:
+  selector:
+    app: backend
+  ports:
+    - port: 8000
+      targetPort: 8000
+  # 로컬에서 dummy_generator.py 등으로 붙어서 테스트하려면
+  # kubectl port-forward svc/backend 8000:8000 사용

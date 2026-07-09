@@ -1,0 +1,81 @@
+# OTel Collector 설정 (ConfigMap으로 배포). 3계층 로그를 한 곳에서 "중앙 수집"해서
+# 단일 OTLP 익스포터로 Central SIEM에 보내는 게 이 Collector의 역할이다.
+#
+#   ① 관문(WAF)     : backend Pod가 OpenTelemetry SDK로 이 Collector에 OTLP(HTTP) push
+#                      (backend/app/otel/logger.py, resource.log.source=waf는 SDK가 이미 태깅)
+#   ② 내부 런타임(Falco): Falco 파드의 stdout(json_output) 로그 파일을 filelog로 tail
+#   ③ 제어판(K8s Audit) : kube-apiserver가 남긴 audit.log 파일을 filelog로 tail
+#
+# Central SIEM이 아직 없으므로 otlphttp 익스포터의 목적지는 환경변수(CENTRAL_SIEM_OTLP_ENDPOINT,
+# otel-collector-deployment.yaml에 placeholder로 정의됨)로 빼두고, debug 익스포터를 나란히
+# 붙여서 `kubectl logs`로 "실제로 수집되는지"를 지금 단계에서도 확인할 수 있게 했다.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+data:
+  config.yaml: |
+    receivers:
+      # ① 관문(WAF) - backend Pod가 직접 push하는 경로
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+      # ② 내부 런타임(Falco) - 컨테이너 stdout 로그 파일(CRI 포맷)을 tail
+      filelog/falco:
+        include:
+          - /var/log/pods/falco_falco-*/falco/*.log
+        include_file_path: true
+        start_at: end
+        operators:
+          # containerd/CRI 로그 라인 포맷(타임스탬프+스트림+P/F 태그)을 파싱하고
+          # 파일 경로에서 k8s 네임스페이스/파드/컨테이너 이름까지 함께 뽑아준다.
+          - type: container
+          - type: add
+            field: resource["log.source"]
+            value: "falco"
+
+      # ③ 제어판(K8s Audit) - kube-apiserver가 남긴 JSON 감사 로그를 tail
+      # (k3d-audit-policy.yaml 정책에 따라 비정상 API 호출 / RBAC 과다 요청 / SA 탈취 시도 위주로 기록됨)
+      filelog/k8s_audit:
+        include:
+          - /var/log/kubernetes/audit/audit*.log
+        start_at: beginning
+        operators:
+          - type: json_parser
+            timestamp:
+              parse_from: attributes.stageTimestamp
+              layout: "%Y-%m-%dT%H:%M:%S.%fZ"
+          - type: add
+            field: resource["log.source"]
+            value: "k8s-audit"
+
+    processors:
+      batch: {}
+
+    exporters:
+      # Central SIEM 없이도 로컬에서 "실제로 나가는지" 확인하기 위한 콘솔 출력
+      debug:
+        verbosity: detailed
+      # 실제 중앙 전송 경로. 목적지는 배포 매니페스트의 CENTRAL_SIEM_OTLP_ENDPOINT로 채운다.
+      # (아직 미구축 상태라 연결 실패는 예상된 상황 - 익스포터가 재시도만 하고 Collector는 안 죽는다)
+      otlphttp:
+        endpoint: ${env:CENTRAL_SIEM_OTLP_ENDPOINT}
+
+    service:
+      pipelines:
+        logs/waf:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [debug, otlphttp]
+        logs/falco:
+          receivers: [filelog/falco]
+          processors: [batch]
+          exporters: [debug, otlphttp]
+        logs/k8s_audit:
+          receivers: [filelog/k8s_audit]
+          processors: [batch]
+          exporters: [debug, otlphttp]

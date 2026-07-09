@@ -1,17 +1,15 @@
 """
-백엔드로 가짜 공격 이벤트를 흘려보내는 더미 생성기.
+백엔드로 가짜 WAF 공격 요청을 흘려보내는 더미 생성기.
 
-실제 파이프라인을 그대로 타야 의미가 있으므로 Kafka가 아니라
-백엔드가 실제로 받는 두 경로에 맞춰 HTTP로 직접 보낸다:
+실제 파이프라인을 그대로 타야 의미가 있으므로, app/proxy/proxy.py의 /proxy/{path}로
+실제 공격 페이로드를 담아 요청을 보내서 app/detection/engine.py + signatures.py의 탐지
+로직이 그대로 동작하게 한다 (탐지되면 403 + AttackLog가 OTel로 otel-collector에 전송됨).
 
-1) WAF 계열 공격 -> app/proxy/proxy.py의 /proxy/{path}로 실제 공격 페이로드를 담아
-   요청을 보내서, app/detection/engine.py + signatures.py의 탐지 로직이
-   그대로 동작하게 한다 (탐지되면 403 + AttackLog 저장 + WS 브로드캐스트).
-2) Falco 계열 탐지 -> app/api/alerts.py가 기대하는 필드(output_fields 등)를
-   갖춘 JSON을 POST /api/alerts로 보낸다 (falco-values.yaml의 http_output과 동일한 형태).
+Falco/K8s Audit 이벤트는 더 이상 이 스크립트가 HTTP로 흉내내지 않는다 - Falco는 이제
+백엔드의 /api/alerts를 거치지 않고 stdout 로그를 otel-collector가 직접 tail하므로, 실제
+파이프라인을 검증하려면 README에 있는 대로 kubectl로 진짜 이벤트를 발생시켜야 한다
+(예: kubectl run attacker --rm -it --image=ubuntu -- bash -c "cat /etc/shadow").
 """
-import base64
-import json
 import os
 import random
 import time
@@ -26,7 +24,7 @@ REQUEST_TIMEOUT_SECONDS = 5
 fake = Faker()
 
 
-# --- WAF 계열: app/detection/signatures.py의 정규식과 실제로 매칭되는 페이로드 ---
+# --- app/detection/signatures.py의 정규식과 실제로 매칭되는 페이로드 ---
 
 def _build_sqli_request():
     # app/proxy/proxy.py의 inspect_request()는 body_text/headers_text만 검사하고
@@ -51,6 +49,9 @@ def _build_os_command_injection_request():
 
 
 def _build_jwt_forgery_request():
+    import base64
+    import json
+
     # engine.py의 _check_jwt_alg_none()이 헤더 세그먼트만 base64 디코딩해서 alg 값을 확인한다.
     header_b64 = base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode()).decode().rstrip("=")
     payload_b64 = base64.urlsafe_b64encode(
@@ -87,50 +88,6 @@ def send_waf_event():
         print(f"[WAF] Error sending request: {e}")
 
 
-# --- Falco 계열: app/api/alerts.py가 파싱하는 output_fields 스키마에 맞춘 이벤트 ---
-
-# rule 문자열의 키워드로 AttackType이 분기되므로(alerts.py 참고),
-# 매핑 로직이 실제로 다 exercise되도록 룰 이름을 골라서 섞는다.
-FALCO_RULES = [
-    "Read sensitive file untrusted",       # -> PATH_TRAVERSAL ("read sensitive" 포함)
-    "Search Private Keys or Passwords",    # -> JWT_FORGERY ("private key" 포함)
-    "Terminal shell in container",         # -> 기본값(OS_COMMAND_INJECTION)
-    "Unauthorized File Modification",      # -> 기본값(OS_COMMAND_INJECTION)
-]
-FALCO_PRIORITIES = ["Critical", "Warning", "Notice", "Informational"]
-SENSITIVE_PATHS = ["/etc/shadow", "/etc/passwd", "/root/.ssh/id_rsa", "/bin/bash"]
-
-
-def _build_falco_event():
-    rule = random.choice(FALCO_RULES)
-    priority = random.choice(FALCO_PRIORITIES)
-    proc_name = fake.word()
-    pod_name = f"{fake.word()}-{fake.random_int(1000, 9999)}"
-
-    return {
-        "output": f"Rule '{rule}' fired by proc={proc_name} in pod={pod_name}",
-        "priority": priority,
-        "rule": rule,
-        "output_fields": {
-            "k8s.pod.name": pod_name,
-            "container.id": fake.sha1()[:12],
-            "container.image.repository": f"{fake.word()}/{fake.word()}",
-            "fd.name": random.choice(SENSITIVE_PATHS),
-            "proc.name": proc_name,
-        },
-    }
-
-
-def send_falco_event():
-    """falco-values.yaml의 http_output과 동일하게 POST /api/alerts로 보낸다."""
-    event = _build_falco_event()
-    try:
-        response = requests.post(f"{BACKEND_URL}/api/alerts", json=event, timeout=REQUEST_TIMEOUT_SECONDS)
-        print(f"[Falco] {event['rule']} -> {response.status_code}")
-    except requests.RequestException as e:
-        print(f"[Falco] Error sending event: {e}")
-
-
 def main():
     print(f"Starting dummy event generator against backend: {BACKEND_URL}")
     print(f"Generating {EVENTS_PER_SECOND} events per second...")
@@ -146,12 +103,7 @@ def main():
             event_counter = 0
             start_time = time.time()
 
-        # 8:2 비율로 WAF:Falco 이벤트 발생 (기존 스크립트 비율 유지)
-        if random.random() < 0.8:
-            send_waf_event()
-        else:
-            send_falco_event()
-
+        send_waf_event()
         event_counter += 1
 
 

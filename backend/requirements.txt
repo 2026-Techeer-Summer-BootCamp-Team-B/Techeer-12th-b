@@ -4,10 +4,6 @@ pydantic==2.13.4
 pydantic-settings==2.14.2
 httpx==0.28.1
 python-dotenv==1.2.2
-sqlalchemy==2.0.36
-psycopg2-binary==2.9.10
 redis==5.2.1
-passlib==1.7.4
-bcrypt==4.0.1
-python-jose[cryptography]==3.3.0
-elasticsearch==8.15.0
+opentelemetry-sdk==1.29.0
+opentelemetry-exporter-otlp-proto-http==1.29.0

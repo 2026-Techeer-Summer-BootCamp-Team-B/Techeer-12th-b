@@ -5,6 +5,9 @@
 # 2. Git으로 공유받은 values.yaml 파일을 사용해 설치/업그레이드
 #helm upgrade --install falco falcosecurity/falco -n falco --create-namespace -f falco-values.yaml
 #
+# http_output(백엔드 /api/alerts로 직접 POST)은 더 이상 쓰지 않는다. 이제 Falco는
+# json_output만 켜두고 stdout에 JSON을 남기면, otel-collector가 Falco 파드의 컨테이너 로그
+# 파일(/var/log/pods/...)을 tail해서 OTLP로 중앙 수집한다 (otel-collector-config.yaml 참고).
 
 driver:
   kind: modern_ebpf
@@ -13,7 +16,3 @@ tty: true
 
 falco:
   json_output: true
-  http_output:
-    enabled: true
-    # 팀원의 PC 환경에서도 동작하도록 윈도우 본토 주소 지정
-    url: "http://host.docker.internal:8000/api/alerts"

@@ -1,6 +1,6 @@
-# 🛡️ 실시간 침입 탐지 플랫폼
+# 🛡️ Target 서버 — WAF + 3계층 보안 로그 OTel 중앙 수집
 
-> 동적 웹 요청 중 비정상 트래픽(SQL Injection, XSS, JWT 위조, OS 커맨드 인젝션 등)을 실시간으로 탐지·차단하고, SIEM 스타일 대시보드로 공격 현황을 시각화하는 경량 웹 방어 플랫폼
+> 동적 웹 요청 중 비정상 트래픽(SQL Injection, XSS, JWT 위조, OS 커맨드 인젝션 등)을 실시간으로 탐지·차단하고, ① 관문(WAF) / ② 내부 런타임(Falco) / ③ 제어판(K8s Audit Log) 3계층에서 나는 보안 로그를 OTel(OTLP)로 중앙 수집해 Central SIEM에 전달하는 "분석 대상 서버(Target)"
 
 <br>
 
@@ -18,19 +18,26 @@
 
 ## 📖 프로젝트 소개
 
-중소규모 웹 서비스는 상용 WAF(Web Application Firewall)를 도입하기엔 비용·운영 부담이 크고, 실제로 어떤 공격이 언제 들어오고 있는지에 대한 가시성(visibility)이 거의 없습니다.
-
-**실시간 침입 탐지 플랫폼**은 웹 서버 앞단에서 트래픽을 가로채 알려진 공격 시그니처를 실시간으로 탐지하고, 탐지 결과를 SIEM 스타일 대시보드로 한눈에 보여주는 경량 방어 시스템입니다.
+이 리포지토리는 "분석 대상 서버(Target)"와 "중앙 SIEM 플랫폼(Central SIEM)"으로 물리적으로
+분리된 아키텍처 중 **Target** 쪽이다. 대시보드/저장/조회는 더 이상 여기서 하지 않는다 —
+Elasticsearch, Postgres, 프론트엔드 대시보드를 모두 제거했고, 대신 클러스터 안에서 발생하는
+3계층 보안 로그를 실시간으로 한곳에 모아(OTel Collector) OTLP로 Central SIEM에 흘려보내는
+역할만 한다.
 
 <br>
 
 ## 🎯 문제 정의 & 해결 가치
 
 **문제**
-웹 서비스는 배포와 동시에 스캐너·봇의 자동 공격 대상이 됩니다. 실시간 탐지 체계 없이는 침해 사실을 사후(로그 분석, 사고 발생 후)에나 알게 되는 경우가 많습니다.
+보안 이벤트는 계층마다 형태가 다 다르다 — WAF는 HTTP 요청/응답, Falco는 커널 syscall 이벤트,
+K8s Audit은 API 서버 호출 로그다. 이걸 계층마다 따로 저장하고 따로 봐야 한다면 "지금 클러스터
+전체에 무슨 일이 일어나고 있는지"를 한 번에 파악할 수 없다.
 
 **해결 가치**
-트래픽을 실시간으로 가로채 SQL Injection, XSS, JWT 위조 등 알려진 공격 패턴을 즉시 탐지하고, 이를 대시보드로 시각화해 **"지금 누가, 어떤 방식으로, 얼마나 자주 공격을 시도하는지"**를 한눈에 파악할 수 있게 합니다. 상용 WAF/SIEM 대비 가볍고, 구조를 이해하기 쉬워 학습·데모 목적에도 적합합니다.
+3계층 모두 OTel(OpenTelemetry) 표준 포맷으로 정규화해서 한 Collector로 모으고, `log.source`
+속성(waf/falco/k8s-audit)만으로 어느 계층에서 온 이벤트인지 구분할 수 있게 한다. Target
+서버는 로그를 "만들고 중앙으로 보내는" 역할만 하고, 상관분석/시각화/장기보관은 Central SIEM이
+전담하는 관심사 분리 구조.
 
 <br>
 
@@ -42,26 +49,33 @@
 | 데이터 정규화 & 우회 방어 | URL 인코딩 디코딩, 대소문자 통일, 파라미터 오염(HPP) 방어로 탐지 우회 차단 |
 | 서버·DB 공격 탐지 | SQL Injection, OS 커맨드 인젝션, Path Traversal 시그니처 기반 탐지 |
 | 클라이언트 공격 탐지 | XSS, 악성 파일 업로드(웹셸) 탐지 |
-| 중앙 로깅 | 탐지된 모든 공격 내역을 JSON 형태로 저장, 대시보드용 API 제공 |
-| SIEM 대시보드 | 실시간 공격 타임라인, Top 공격 IP, 공격 유형 분포, 최근 차단 로그 시각화 |
+| 내부 런타임 탐지 (Falco) | 컨테이너 안에서 일어나는 민감 파일 접근, 셸 실행, 권한 상승 시도 등을 커널 레벨에서 탐지 |
+| 컨트롤 플레인 방어 (K8s Audit) | 비정상 API 호출, RBAC 과다 권한 요청, ServiceAccount 탈취 시도 감사 로그 |
+| OTel 중앙 수집 | 위 3계층 로그를 OTel Collector가 한 곳에서 모아 OTLP로 Central SIEM에 전송 |
 
 <br>
 
 ## 🏗 시스템 아키텍처
 
 ```
-클라이언트 요청
-    ↓
-[게이트웨이] Bad Bot 차단 / Rate Limiting / 에러 마스킹
-    ↓
-[디코더] URL 디코딩 / 대소문자 통일 / HPP 방어
-    ↓
-[탐지 엔진] SQLi·커맨드인젝션·경로탐색 / XSS·파일업로드 탐지
-    ↓
-[중앙 로깅] 공격 로그 저장 (JSON)
-    ↓
-[SIEM 대시보드] 실시간 시각화
+[브라우저/공격자] --> WAF Pod(FastAPI, k3d 안) --탐지--> OTel SDK(OTLP push) ---+
+                                                                                |
+[Falco DaemonSet] --stdout(json_output)--> 노드 로그 파일 -----(filelog)-------+--> OTel Collector
+                                                                                |    (DaemonSet, k3d 안)
+[kube-apiserver] --audit.log(JSON)--> hostPath ------------------(filelog)-----+
+                                                                                |
+                                                        exporters: debug(stdout) + otlphttp
+                                                                                |
+                                                                                v
+                                                          Central SIEM (별도 리포지토리, 미구현)
 ```
+
+- **① 관문(WAF)**: `app/middleware/gateway.py`(Rate Limit/Bad Bot/Brute Force) → `app/proxy/proxy.py`
+  (디코더 + 탐지 엔진) → 탐지되면 `app/otel/logger.py`가 OTLP로 otel-collector에 push, 403 차단.
+- **② 내부 런타임(Falco)**: DaemonSet으로 배포, `json_output`만 켜서 stdout에 JSON을 남기고
+  otel-collector가 파드 로그 파일을 tail.
+- **③ 제어판(K8s Audit)**: kube-apiserver가 `k3d-audit-policy.yaml` 정책대로 JSON 감사 로그를
+  파일로 남기고, otel-collector가 hostPath로 tail.
 
 <br>
 
@@ -77,14 +91,14 @@ Python, FastAPI
 정규표현식(Regex) 기반 시그니처 매칭
 ```
 
-**Frontend**
+**로그 수집 / 전송**
 ```
-추가 예정
+OpenTelemetry SDK(WAF) + OpenTelemetry Collector(Falco/K8s Audit 파일 tail) — OTLP로 Central SIEM 전송
 ```
 
-**Database / Logging**
+**운영 상태 저장소**
 ```
-JSON 기반 로그 저장 (attack_log.jsonl)
+Redis (IP 블랙리스트, 계정 잠금 — 관계형 조회가 필요 없는 운영 상태만 남김)
 ```
 
 **협업 도구**
@@ -100,11 +114,11 @@ Git / GitHub / Notion / Discord
 
 | 이름 | 역할 | 담당 업무 | 담당 파일 |
 |------|------|-----------|-----------|
-| 이용욱 | 총괄 / 게이트웨이 & 트래픽 컨트롤러 | 전체 아키텍처 총괄, 팀 조율, 웹 서버 뼈대 구축, Bad Bot 차단, Rate Limiting/Brute Force 차단, 에러 마스킹 | `main.py`, `app/config.py`, `app/middleware/gateway.py`, `app/api/blacklist.py`, `app/proxy/proxy.py`(예정) |
-| 서동영 | 프론트엔드 관제 대시보드 | 보안 모니터링 대시보드 UI/UX, 실시간 경고창(Alert), 공격 통계 표/그래프 | `frontend/`(예정), `app/api/ws.py`(프론트 연동) |
+| 이용욱 | 총괄 / 게이트웨이 & 트래픽 컨트롤러 | 전체 아키텍처 총괄, 팀 조율, 웹 서버 뼈대 구축, Bad Bot 차단, Rate Limiting/Brute Force 차단, 에러 마스킹 | `main.py`, `app/config.py`, `app/middleware/gateway.py`, `app/api/blacklist.py`, `app/proxy/proxy.py` |
+| 서동영 | 인프라 & 클러스터 관제 | k3d/Falco/OTel Collector 배포, 컨트롤 플레인(K8s Audit) 방어 | `k3d-cluster-config.yaml`, `k3d-audit-policy.yaml`, `otel-collector-*.yaml` |
 | 하지환 | 데이터 정규화 & 우회 방어 | 인코딩 디코딩, 대소문자 통일, 파라미터 오염(HPP) 방어 | `app/middleware/decoder.py` |
-| 윤재영 | 서버 & DB 보안 분석관 | SQL Injection, OS 커맨드 인젝션, 경로 탐색(Path Traversal) 방어 | `app/detection/signatures.py`(SQLi/OS Command Injection/Path Traversal), `app/detection/engine.py`(서버·DB 탐지 부분), `app/api/rules.py`, `app/storage/rules_store.py`(서버·DB 룰 공동) |
-| 심다움 | 클라이언트 보안 분석관 & 로그 마스터 | XSS 방어, 악성 파일 업로드 차단, 중앙 로깅 저장소 운영 및 API 제공 | `app/detection/signatures.py`(XSS/파일 업로드), `app/detection/engine.py`(클라이언트 탐지 부분), `app/api/logs.py`, `app/api/stats.py`, `app/api/ws.py`(알림 트리거), `app/storage/log_store.py`, `app/api/rules.py`, `app/storage/rules_store.py`(클라이언트 룰 공동) |
+| 윤재영 | 서버 & DB 보안 분석관 | SQL Injection, OS 커맨드 인젝션, 경로 탐색(Path Traversal) 방어 | `app/detection/signatures.py`(SQLi/OS Command Injection/Path Traversal), `app/detection/engine.py`(서버·DB 탐지 부분) |
+| 심다움 | 클라이언트 보안 분석관 & 로그 마스터 | XSS 방어, 악성 파일 업로드 차단, 탐지 로그의 OTel 중앙 수집 전송 | `app/detection/signatures.py`(XSS/파일 업로드), `app/detection/engine.py`(클라이언트 탐지 부분), `app/storage/log_store.py`, `app/otel/logger.py` |
 
 <br>
 
@@ -113,24 +127,22 @@ Git / GitHub / Notion / Discord
 | 주차 | 목표 | 주요 작업 |
 |------|------|-----------|
 | 1주차 | 기획 확정 + 설계 완료 + 개발 착수 | 주제 확정, 문제정의/해결가치 정리, 기능명세서, 역할분담, 아키텍처·ERD·API 명세 초안, Git 전략, 개발환경 세팅 |
-| 2주차 | 서비스 뼈대 완성 | ERD/API 명세 확정, 백엔드 API 개발(게이트웨이·디코더·탐지 로직), 프론트엔드 퍼블리싱, 프론트-백 연동 |
-| 3주차 | 실제 데모 가능한 수준 만들기 | 핵심 기능 구현 완료, 배포, 버그 수정, 예외처리/성능개선, CI/CD, 모니터링 구축, UI 개선, 테스트코드 작성 |
-| 4주차 | 프로젝트 최종 완성 및 발표 준비 | 데모 영상 제작, 발표 콘티/PPT 작성, 발표 리허설, README/문서 정리, 포트폴리오 정리 |
+| 2주차 | 서비스 뼈대 완성 | 백엔드 API 개발(게이트웨이·디코더·탐지 로직), Falco/K8s Audit 연동 |
+| 3주차 | Target/Central SIEM 분리 전환 | ES/Postgres/프론트엔드 제거, OTel Collector 도입, 3계층 로그 OTel 중앙 수집 전환 |
+| 4주차 | 프로젝트 최종 완성 및 발표 준비 | Central SIEM 연동, 데모 영상 제작, 발표 콘티/PPT 작성, README/문서 정리 |
 
 <br>
 
 ## 🚀 시작하기
 
-로컬 개발 방식: **백엔드/프론트엔드/더미 공격 로그 생성기는 로컬(VS Code PowerShell 등)에서 직접 실행**하고,
-**Elasticsearch·Postgres·Redis·Falco(DaemonSet)는 k3d 클러스터 안에 배포**해서
-`kubectl port-forward`로 로컬 백엔드/DB를 연결합니다.
+이제 백엔드(WAF)도 로컬이 아니라 **k3d 클러스터 안에 Pod로 배포**한다. Falco/K8s Audit은
+이미 클러스터 안에 있으므로, 3계층 전부 클러스터 내부망에서 otel-collector에 닿을 수 있다.
 
 ### 요구사항
 ```
 Docker Desktop (Windows/Mac) 또는 Docker Engine
 k3d, kubectl, Helm
-Python 3.11+  (psycopg2-binary의 prebuilt wheel이 있는 버전을 권장)
-Node.js 18+
+Python 3.11+
 ```
 
 **k3d / kubectl / Helm 설치**
@@ -148,14 +160,13 @@ brew install k3d kubectl helm
 
 ### 1) k3d 클러스터 생성
 저장소 루트의 `k3d-cluster-config.yaml`로 서버 1개 + 에이전트 2개(총 3노드) 클러스터를 만듭니다.
-Falco는 DaemonSet(노드마다 하나씩 뜨는 파드)이라, 노드가 여러 개여야 "노드마다 하나씩 배포"되는
-동작을 실제로 확인할 수 있습니다.
+Falco/OTel Collector는 DaemonSet(노드마다 하나씩 뜨는 파드)이라, 노드가 여러 개여야 "노드마다
+하나씩 배포"되는 동작을 실제로 확인할 수 있습니다.
 
 이 설정에는 **컨트롤 플레인 방어용 K8s Audit 로그**도 함께 켜져 있습니다. 서버 노드의
 kube-apiserver가 `k3d-audit-policy.yaml` 정책(비정상 API 호출 / RBAC 과다 권한 요청 / 서비스
 어카운트 탈취 시도 위주로 기록)에 따라 감사 로그를 남기고, 저장소 루트의 `k8s-audit-logs/`
-디렉터리로 JSON 로그가 그대로 떨어집니다. Falco·WAS 로그와 마찬가지로 지금은 파일 적재까지만
-하며, 추후 Falco/WAS/K8s Audit 로그를 전부 OTel Collector로 보내도록 확장할 예정입니다.
+디렉터리로 JSON 로그가 그대로 떨어집니다 (otel-collector가 이 파일을 tail).
 
 정책 파일과 로그 디렉터리는 **절대경로로 bind mount** 해야 해서 (상대경로를 주면 k3d/Docker가
 빈 이름의 도커 볼륨으로 오인해 kube-apiserver가 기동 실패합니다 - 실제로 겪은 이슈) `--volume`
@@ -176,19 +187,13 @@ k3d cluster create --config k3d-cluster-config.yaml \
 kubectl get nodes
 # techeer-ids-server-0, techeer-ids-agent-0, techeer-ids-agent-1 3개가 Ready여야 함
 ```
-Audit 로그가 실제로 쌓이는지 확인 (클러스터 생성 직후 몇 초 내로 파일이 생겨야 함):
-```bash
-ls k8s-audit-logs/
-tail -f k8s-audit-logs/audit.log
-```
 
-### 2) 인프라(ES/Postgres/Redis) 배포
+### 2) 인프라(Redis) 배포
+Elasticsearch/Postgres는 더 이상 쓰지 않는다 (블랙리스트/계정잠금만 Redis에 남아있음).
 ```bash
-kubectl apply -f backend/elasticsearch-deployment.yaml
-kubectl apply -f backend/postgres-deployment.yaml
 kubectl apply -f backend/redis-deployment.yaml
 
-# 전부 Running이 될 때까지 대기 (Ctrl+C로 감시 종료)
+# Running이 될 때까지 대기 (Ctrl+C로 감시 종료)
 kubectl get pods -w
 ```
 
@@ -201,54 +206,52 @@ helm upgrade --install falco falcosecurity/falco -n falco --create-namespace -f 
 kubectl get daemonset -n falco
 # DESIRED/READY가 노드 수(3)와 같아야 노드마다 하나씩 뜬 것
 ```
-> `falco-values.yaml`은 커스텀 룰 없이 Falco 기본 룰셋을 그대로 사용하고,
-> `http_output.url`은 `http://host.docker.internal:8000/api/alerts`로 고정되어 있어
-> **로컬에서 백엔드가 8000번 포트로 떠 있어야** Falco 알림이 도달합니다. k3d 노드도 결국
-> Docker 컨테이너라 Docker Desktop이 주입하는 `host.docker.internal`을 그대로 씁니다.
+> `http_output`(백엔드로 직접 POST)은 더 이상 쓰지 않습니다. `json_output`만 켜서 stdout에
+> JSON을 남기고, otel-collector가 파드 로그 파일을 tail합니다.
 
-### 4) 인프라를 로컬 포트로 연결
-터미널 3개를 열어 각각 계속 실행해 둡니다 (`backend/.env`가 이미 아래 포트 기준으로 설정되어 있어 추가 설정 불필요):
+### 4) OTel Collector 배포 (3계층 로그의 중앙 수집 지점)
 ```bash
-kubectl port-forward svc/elasticsearch 9200:9200
-kubectl port-forward svc/postgres 5432:5432
-kubectl port-forward svc/redis 6379:6379
+kubectl apply -f otel-collector-config.yaml
+kubectl apply -f otel-collector-deployment.yaml
+
+kubectl get daemonset otel-collector
+# DESIRED/READY가 노드 수(3)와 같아야 함
+```
+Central SIEM은 아직 없으므로 `otel-collector-deployment.yaml`의 `CENTRAL_SIEM_OTLP_ENDPOINT`는
+placeholder 값입니다 — 연결 실패 로그가 찍히는 건 정상이고(재시도만 함, Collector가 죽지는
+않음), Central SIEM 주소가 정해지면 이 값만 바꾸면 됩니다. 지금 단계에서 "실제로 수집되는지"는
+`debug` 익스포터로 확인합니다:
+```bash
+kubectl logs daemonset/otel-collector -c otel-collector -f
 ```
 
-### 5) 백엔드 실행 (로컬, VS Code PowerShell)
+### 5) WAF 백엔드 이미지 빌드 & 배포
 ```bash
-cd backend
-python -m venv .venv
-# Windows: .venv\Scripts\activate   /   macOS·Linux: source .venv/bin/activate
-pip install -r requirements.txt
+docker build -t techeer-waf-backend:latest backend/
+k3d image import techeer-waf-backend:latest -c techeer-ids
 
-# 최초 1회만: 테이블 생성 + 관리자 계정 시딩 (admin / changeme123)
-python -m app.init_db
+kubectl apply -f backend/backend-deployment.yaml
 
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+kubectl get pods -l app=backend -w
 ```
-> Windows에서 `psycopg2-binary` 설치가 `pg_config executable not found`로 실패하면,
-> 최신 prebuilt wheel을 먼저 받도록 `pip install --only-binary=:all: psycopg2-binary`를
-> 실행한 뒤 `pip install -r requirements.txt`를 다시 시도하세요.
->
-> `--host 0.0.0.0`이 중요합니다 — `127.0.0.1`로만 열면 k3d 안의 Falco 파드가
-> `host.docker.internal`로 접근할 때 연결이 거부됩니다.
-
-확인: http://localhost:8000/health → `{"status":"ok"}`
-
-### 6) 프론트엔드 실행 (로컬, VS Code PowerShell)
+확인 (로컬에서 붙으려면 port-forward):
 ```bash
-cd frontend
-npm install
-npm run dev
+kubectl port-forward svc/backend 8000:8000
+curl http://localhost:8000/health   # {"status":"ok"}
 ```
-확인: http://localhost:5173 (`frontend/.env`의 `VITE_API_URL`이 백엔드 포트(8000)와 일치해야 함)
 
-### 7) 더미 공격 로그 생성기 실행 (로컬, VS Code PowerShell)
-WAF 공격(SQLi/XSS/Path Traversal/OS Command Injection/JWT 위조)은 `/proxy/{path}`로,
-Falco 스타일 탐지는 `/api/alerts`로 실제 요청을 보내 파이프라인 전체를 검증합니다.
+### 6) Juice Shop(보호 대상) 배포
+```bash
+kubectl apply -f juice-shop-nginx-configmap.yaml
+kubectl apply -f juice-shop-with-nginx-sidecar.yaml
+```
+
+### 7) 더미 공격 요청 생성기 실행 (로컬, VS Code PowerShell)
+WAF 공격(SQLi/XSS/Path Traversal/OS Command Injection/JWT 위조)을 `/proxy/{path}`(port-forward된
+backend)로 보내 탐지 → OTel 전송 파이프라인 전체를 검증합니다.
 ```bash
 cd tests
-pip install -r requirements.txt   # backend 가상환경을 그대로 써도 무방
+pip install -r requirements.txt
 
 # Windows(PowerShell)
 $env:BACKEND_URL="http://localhost:8000"; $env:EVENTS_PER_SECOND="5"; python dummy_generator.py
@@ -257,40 +260,28 @@ BACKEND_URL=http://localhost:8000 EVENTS_PER_SECOND=5 python dummy_generator.py
 ```
 
 ### ✅ 테스트 흐름
-1. http://localhost:5173 접속 → `admin` / `changeme123` 로그인
-2. 우상단 `LIVE` 표시(녹색)로 WebSocket 연결 확인
-3. `dummy_generator.py` 실행 → 공격이 403으로 차단되며 통계 카드 / 실시간 타임라인 /
-   공격 유형 도넛 차트 / 최근 차단 로그 테이블 / 하단 티커에 즉시 반영되는지 확인
-4. Falco가 실제로 탐지 중인지 확인 (예: 클러스터 안에서 민감 파일 접근을 흉내내는 파드 실행):
+1. `dummy_generator.py` 실행 → 공격이 403으로 차단되는지 확인.
+2. otel-collector의 `debug` 출력에서 `log.source: Str(waf)` 레코드가 실시간으로 찍히는지 확인:
+   ```bash
+   kubectl logs daemonset/otel-collector -c otel-collector -f | grep -A5 "log.source: Str(waf)"
+   ```
+3. Falco가 실제로 탐지 중인지 확인 (클러스터 안에서 민감 파일 접근을 흉내내는 파드 실행):
    ```bash
    kubectl run attacker --rm -it --image=ubuntu -- bash -c "cat /etc/shadow"
    ```
-   Falco 파드 로그와 `http_output` 전송 성공 여부 확인:
-   ```bash
-   kubectl logs -n falco -l app.kubernetes.io/name=falco -c falco --tail=50
-   ```
-   (`"http" output timeout` / `libcurl failed to perform call` 같은 에러가 보이면
-   5)번의 `--host 0.0.0.0` 여부와 백엔드가 실제로 떠 있는지부터 확인하세요.)
-5. Elasticsearch 적재를 직접 확인:
-   ```bash
-   curl "http://localhost:9200/attack-logs/_search?sort=timestamp:desc&size=5&pretty"
-   ```
-6. K8s Audit 로그가 컨트롤 플레인 이상 행위를 잡는지 확인 (예: 과도한 권한을 주는
-   ClusterRoleBinding 생성 = RBAC 권한 상승 시도 흉내):
+   otel-collector 로그에서 `log.source: Str(falco)` 레코드 확인.
+4. K8s Audit 로그가 컨트롤 플레인 이상 행위를 잡는지 확인 (RBAC 권한 상승 시도 흉내):
    ```bash
    kubectl create clusterrolebinding demo-privesc \
      --clusterrole=cluster-admin --serviceaccount=default:default
    kubectl delete clusterrolebinding demo-privesc
    ```
-   `k8s-audit-logs/audit.log`에서 방금 생성한 리소스가 `RequestResponse` 레벨(응답 본문 포함)로
-   기록됐는지 확인:
-   ```bash
-   grep "demo-privesc" k8s-audit-logs/audit.log
-   ```
+   otel-collector 로그에서 `log.source: Str(k8s-audit)` 레코드 확인 (`k8s-audit-logs/audit.log`에도
+   그대로 남아있음).
 
 ### 종료 / 정리
 ```bash
-# 더미 생성기/포트포워드/백엔드/프론트엔드 터미널: Ctrl+C
+# 더미 생성기/port-forward 터미널: Ctrl+C
 
 # 클러스터 자체를 완전히 지우고 싶을 때 (모든 데이터 삭제됨)
 k3d cluster delete techeer-ids

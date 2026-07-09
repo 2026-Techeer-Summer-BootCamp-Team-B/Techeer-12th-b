@@ -10,8 +10,7 @@
               1) decoder.py로 body/헤더를 정규화 (인코딩 우회 방지)
               2) engine.py의 inspect_request로 SQLi/XSS/JWT위조 등 탐지
               3) 공격으로 판정되면
-                   -> AttackLog 저장 (Elasticsearch, mitre_technique_id 자동 채움)
-                   -> WebSocket으로 대시보드에 실시간 알림 발송
+                   -> AttackLog를 OTel(OTLP)로 otel-collector에 전송 (mitre_technique_id 자동 채움)
                    -> 403으로 즉시 차단
               4) 안전하면 -> settings.target_service_url(Juice Shop)로 그대로 전달하고
                  받은 응답을 브라우저에 그대로 돌려줌
@@ -22,9 +21,7 @@ from fastapi import APIRouter, Request, Response
 from app.config import settings
 from app.detection.engine import inspect_request
 from app.middleware.decoder import normalize_query_params, normalize_text
-from app.models.schemas import RiskLevel
 from app.storage.log_store import add_log as save_log
-from app.websocket.manager import manager
 
 router = APIRouter()
 
@@ -84,11 +81,6 @@ async def proxy_request(path: str, request: Request):
 
     if attack_log is not None:
         save_log(attack_log)
-
-        # 실시간 알림 발송 - CRITICAL은 별도 이벤트 타입으로 구분해서
-        # 대시보드가 팝업 등으로 더 눈에 띄게 처리할 수 있게 함
-        event_type = "critical_alert" if attack_log.risk_level == RiskLevel.CRITICAL else "attack_detected"
-        await manager.broadcast({"event": event_type, "data": attack_log.model_dump(mode="json")})
 
         return Response(
             content='{"detail": "Request blocked by security gateway"}',

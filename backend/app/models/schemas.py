@@ -1,6 +1,9 @@
 """
-노션 ERD 초안(AttackLog / IPBlacklist / DetectionRule)을 그대로 코드로 옮긴 파일.
+노션 ERD 초안(AttackLog / IPBlacklist)을 그대로 코드로 옮긴 파일.
 API 요청/응답과 저장 형식 모두 여기 정의된 모델을 기준으로 맞춘다.
+
+DetectionRule(정규식을 DB로 관리)은 Postgres 제거와 함께 삭제됨 - 실제로도 탐지 엔진은
+signatures.py에 하드코딩된 SIGNATURES만 참조하고 있어 연결된 적이 없었다.
 """
 from datetime import datetime
 from enum import Enum
@@ -77,18 +80,3 @@ class IPBlacklistEntry(BaseModel):
     blocked_at: datetime = Field(default_factory=datetime.utcnow)
     expires_at: Optional[datetime] = None
     is_manual: bool = False
-
-
-class DetectionRule(BaseModel):
-    """
-    담당: 심다움 / 하지환 / 윤재영 (각자 담당 공격 유형의 룰 등록)
-    정규식을 코드에 하드코딩하지 않고 데이터로 관리해서
-    코드 수정 없이 룰만 추가/비활성화할 수 있게 함.
-    """
-    id: str = Field(default_factory=lambda: str(uuid4()))
-    name: str
-    attack_type: AttackType
-    pattern: str  # 정규표현식 패턴
-    severity: RiskLevel = RiskLevel.MEDIUM
-    enabled: bool = True
-    created_by: Optional[str] = None
