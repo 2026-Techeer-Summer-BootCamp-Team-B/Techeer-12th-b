@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: juice-shop-nginx-conf
+data:
+  nginx.conf: |
+    # Juice Shop 앞단에서 요청/응답을 그대로 통과시키면서 access log만 남기는 설정.
+    # WAF처럼 차단하는 게 아니라, "요청이 있었다"는 사실만 stdout에 기록하는 게 목적.
+
+    events {}
+
+    http {
+      # JSON 형태로 로그를 남겨야 나중에 OTel Collector가 파싱하기 편함
+      log_format was_json escape=json
+        '{'
+          '"time":"$time_iso8601",'
+          '"remote_addr":"$remote_addr",'
+          '"method":"$request_method",'
+          '"path":"$uri",'
+          '"query":"$args",'
+          '"status":$status,'
+          '"body_bytes_sent":$body_bytes_sent,'
+          '"request_time":$request_time,'
+          '"user_agent":"$http_user_agent",'
+          '"referer":"$http_referer"'
+        '}';
+
+      access_log /dev/stdout was_json;
+      error_log /dev/stderr warn;
+
+      server {
+        listen 8080;
+
+        location / {
+          # 같은 Pod 안의 juice-shop 컨테이너로 그대로 전달 (localhost로 접근 가능)
+          proxy_pass http://127.0.0.1:3000;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+      }
+    }
