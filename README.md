@@ -150,11 +150,36 @@ brew install k3d kubectl helm
 저장소 루트의 `k3d-cluster-config.yaml`로 서버 1개 + 에이전트 2개(총 3노드) 클러스터를 만듭니다.
 Falco는 DaemonSet(노드마다 하나씩 뜨는 파드)이라, 노드가 여러 개여야 "노드마다 하나씩 배포"되는
 동작을 실제로 확인할 수 있습니다.
-```bash
-k3d cluster create --config k3d-cluster-config.yaml
 
+이 설정에는 **컨트롤 플레인 방어용 K8s Audit 로그**도 함께 켜져 있습니다. 서버 노드의
+kube-apiserver가 `k3d-audit-policy.yaml` 정책(비정상 API 호출 / RBAC 과다 권한 요청 / 서비스
+어카운트 탈취 시도 위주로 기록)에 따라 감사 로그를 남기고, 저장소 루트의 `k8s-audit-logs/`
+디렉터리로 JSON 로그가 그대로 떨어집니다. Falco·WAS 로그와 마찬가지로 지금은 파일 적재까지만
+하며, 추후 Falco/WAS/K8s Audit 로그를 전부 OTel Collector로 보내도록 확장할 예정입니다.
+
+정책 파일과 로그 디렉터리는 **절대경로로 bind mount** 해야 해서 (상대경로를 주면 k3d/Docker가
+빈 이름의 도커 볼륨으로 오인해 kube-apiserver가 기동 실패합니다 - 실제로 겪은 이슈) `--volume`
+플래그로 따로 넘깁니다. **반드시 저장소 루트에서 실행**하세요:
+```powershell
+# Windows (PowerShell)
+k3d cluster create --config k3d-cluster-config.yaml `
+  --volume "$PWD\k3d-audit-policy.yaml:/etc/kubernetes/audit-policy.yaml@server:0" `
+  --volume "$PWD\k8s-audit-logs:/var/log/kubernetes/audit@server:0"
+```
+```bash
+# macOS/Linux (bash/zsh)
+k3d cluster create --config k3d-cluster-config.yaml \
+  --volume "$(pwd)/k3d-audit-policy.yaml:/etc/kubernetes/audit-policy.yaml@server:0" \
+  --volume "$(pwd)/k8s-audit-logs:/var/log/kubernetes/audit@server:0"
+```
+```bash
 kubectl get nodes
 # techeer-ids-server-0, techeer-ids-agent-0, techeer-ids-agent-1 3개가 Ready여야 함
+```
+Audit 로그가 실제로 쌓이는지 확인 (클러스터 생성 직후 몇 초 내로 파일이 생겨야 함):
+```bash
+ls k8s-audit-logs/
+tail -f k8s-audit-logs/audit.log
 ```
 
 ### 2) 인프라(ES/Postgres/Redis) 배포
@@ -249,6 +274,18 @@ BACKEND_URL=http://localhost:8000 EVENTS_PER_SECOND=5 python dummy_generator.py
 5. Elasticsearch 적재를 직접 확인:
    ```bash
    curl "http://localhost:9200/attack-logs/_search?sort=timestamp:desc&size=5&pretty"
+   ```
+6. K8s Audit 로그가 컨트롤 플레인 이상 행위를 잡는지 확인 (예: 과도한 권한을 주는
+   ClusterRoleBinding 생성 = RBAC 권한 상승 시도 흉내):
+   ```bash
+   kubectl create clusterrolebinding demo-privesc \
+     --clusterrole=cluster-admin --serviceaccount=default:default
+   kubectl delete clusterrolebinding demo-privesc
+   ```
+   `k8s-audit-logs/audit.log`에서 방금 생성한 리소스가 `RequestResponse` 레벨(응답 본문 포함)로
+   기록됐는지 확인:
+   ```bash
+   grep "demo-privesc" k8s-audit-logs/audit.log
    ```
 
 ### 종료 / 정리
