@@ -148,6 +148,18 @@ ATTACK_TYPE_TO_MITRE: dict[AttackType, MitreMapping] = {
         "technique_name": "Brute Force",
         "is_exact_match": True,
     },
+    AttackType.BAD_BOT: {
+        "tactic": "Reconnaissance",
+        "technique_id": "T1595",
+        "technique_name": "Active Scanning",
+        "is_exact_match": False,  # 스캐너 자체 전용 기법은 없고, "자동화 도구로 대상을 훑는다"는 점에서 근사
+    },
+    AttackType.RATE_LIMIT_ABUSE: {
+        "tactic": "Impact",
+        "technique_id": "T1499",
+        "technique_name": "Endpoint Denial of Service",
+        "is_exact_match": False,  # 과다 요청이 서비스 가용성에 영향을 준다는 점에서 근사
+    },
 }
 
 

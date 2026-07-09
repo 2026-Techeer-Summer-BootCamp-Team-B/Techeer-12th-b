@@ -42,6 +42,8 @@ class AttackType(str, Enum):
     CORS_ABUSE = "cors_abuse"                  # CORS Misconfiguration 악용
     JWT_FORGERY = "jwt_forgery"
     BRUTE_FORCE = "brute_force"
+    BAD_BOT = "bad_bot"                        # 알려진 해킹 툴/스캐너 User-Agent
+    RATE_LIMIT_ABUSE = "rate_limit_abuse"       # 짧은 시간 내 과다 요청
 
 
 class RiskLevel(str, Enum):
@@ -66,17 +68,10 @@ class AttackLog(BaseModel):
     payload_snippet: str = Field(max_length=200)
     user_agent: Optional[str] = None
     matched_rule_id: Optional[str] = None
-    blocked: bool = True
+    # WAF는 더 이상 요청을 차단하지 않고 로그만 남긴다 (실제 차단은 WAS 책임) — 기본값 False.
+    # engine.py의 alg:none JWT 위조 탐지처럼 "차단에 준하는 심각도"를 표시하고 싶은 경우에만
+    # 호출부에서 명시적으로 True를 넘긴다.
+    blocked: bool = False
     target_name: Optional[str] = None
     mitre_technique_id: Optional[str] = None
     risk_level: RiskLevel = RiskLevel.LOW
-
-
-class IPBlacklistEntry(BaseModel):
-    """담당: 이용욱 (게이트웨이) — Rate Limiting/Brute Force 결과로 자동 등록됨"""
-    ip: str
-    reason: str
-    hit_count: int = 1
-    blocked_at: datetime = Field(default_factory=datetime.utcnow)
-    expires_at: Optional[datetime] = None
-    is_manual: bool = False

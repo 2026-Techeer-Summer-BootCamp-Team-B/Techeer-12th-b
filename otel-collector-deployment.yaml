@@ -33,8 +33,10 @@ spec:
           env:
             # Central SIEM이 아직 없어서 우선 placeholder를 넣어둔다 - 실제 주소가 정해지면
             # 이 값만 바꾸면 됨 (연결 실패해도 Collector는 재시도만 하고 죽지 않는다).
+            # otel-collector-config.yaml의 otlp 익스포터는 gRPC라 스킴 없이 host:port만 넣는다
+            # (기본 gRPC 포트 4317. HTTP였다면 보통 4318을 썼을 것).
             - name: CENTRAL_SIEM_OTLP_ENDPOINT
-              value: "http://central-siem.example.internal:4317"
+              value: "central-siem.example.internal:4317"
           ports:
             - containerPort: 4317
               name: otlp-grpc

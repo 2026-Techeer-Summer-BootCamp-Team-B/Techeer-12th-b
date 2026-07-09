@@ -70,7 +70,7 @@ def inspect_request(
             payload_snippet=headers_text[:200],
             user_agent=user_agent,
             matched_rule_id="jwt_alg_none",
-            blocked=True,
+            blocked=False,
             risk_level=RiskLevel.CRITICAL,
         )
 
@@ -90,7 +90,7 @@ def inspect_request(
                 payload_snippet=snippet,
                 user_agent=user_agent,
                 matched_rule_id=rule_name,
-                blocked=True,
+                blocked=False,
                 risk_level=RiskLevel(severity),
             )
 

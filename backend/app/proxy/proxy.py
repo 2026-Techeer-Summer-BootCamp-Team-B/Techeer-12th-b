@@ -5,15 +5,15 @@
 
 흐름:
     브라우저 요청
-        -> GatewayMiddleware (블랙리스트/RateLimit/BadBot, 이미 통과한 상태)
+        -> GatewayMiddleware (Bad Bot/RateLimit/BruteForce/CORS 위반 탐지, 로그만 남기고 통과)
         -> 여기 (/proxy/{path})
               1) decoder.py로 body/헤더를 정규화 (인코딩 우회 방지)
               2) engine.py의 inspect_request로 SQLi/XSS/JWT위조 등 탐지
               3) 공격으로 판정되면
                    -> AttackLog를 OTel(OTLP)로 otel-collector에 전송 (mitre_technique_id 자동 채움)
-                   -> 403으로 즉시 차단
-              4) 안전하면 -> settings.target_service_url(Juice Shop)로 그대로 전달하고
-                 받은 응답을 브라우저에 그대로 돌려줌
+              4) 판정 결과와 무관하게 항상 settings.target_service_url(Juice Shop)로 그대로
+                 전달하고 받은 응답을 브라우저에 그대로 돌려줌 — WAF는 더 이상 차단하지 않고
+                 로그만 생성한다 (실제 차단/접근 제어는 WAS 책임).
 """
 import httpx
 from fastapi import APIRouter, Request, Response
@@ -81,12 +81,6 @@ async def proxy_request(path: str, request: Request):
 
     if attack_log is not None:
         save_log(attack_log)
-
-        return Response(
-            content='{"detail": "Request blocked by security gateway"}',
-            status_code=403,
-            media_type="application/json",
-        )
 
     # 쿼리 파라미터도 정규화 (HTTP Parameter Pollution 방어)
     raw_query_params: dict = {}

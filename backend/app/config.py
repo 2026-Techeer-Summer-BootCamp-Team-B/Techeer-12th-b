@@ -18,9 +18,6 @@ class Settings(BaseSettings):
     rate_limit_window_seconds: int = 60
     rate_limit_max_requests: int = 30
 
-    # Redis 접속 정보 (담당: 이용욱) - k8s DNS로 redis 서비스에 접근
-    redis_url: str = "redis://redis:6379/0"
-
     # OTel Collector 접속 정보 (담당: 심다움) - 탐지된 AttackLog를 여기로 OTLP(HTTP) push.
     # otel-collector-deployment.yaml이 만드는 클러스터 내부 Service 이름을 그대로 씀.
     # 필드명을 OTel 표준 환경변수(OTEL_EXPORTER_OTLP_ENDPOINT)에 그대로 맞춰서

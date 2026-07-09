@@ -6,9 +6,12 @@ Target 서버(WAF 게이트웨이) — FastAPI 진입점
 
 구조:
     클라이언트 요청
-        -> GatewayMiddleware (이용욱: 블랙리스트/Rate Limit/Bad Bot/에러마스킹)
-        -> /proxy/{path} (이용욱: 디코더+탐지엔진 거쳐서 실제 서비스로 전달)
-        -> /api/blacklist (조회/관리 API)
+        -> GatewayMiddleware (이용욱: Rate Limit/Bad Bot/Brute Force/CORS 위반 — 탐지 후 로그만 남기고 통과)
+        -> /proxy/{path} (이용욱: 디코더+탐지엔진 거쳐서 실제 서비스로 항상 전달)
+
+WAF는 아무것도 차단하지 않는다 — 실제 접근 제어(차단)는 WAS(보호 대상 서비스) 책임이고,
+이 앱은 의심스러운 트래픽을 탐지해서 로그로만 남긴다. 그래서 차단 상태를 들고 있던 Redis
+(블랙리스트/계정 잠금)도 더 이상 쓰지 않는다.
 
 탐지된 공격 로그는 app/otel/logger.py를 통해 OTel(OTLP)로 otel-collector에 실시간
 전송된다. Falco(런타임)/K8s Audit(제어판) 로그도 같은 Collector가 모아서 Central SIEM으로
@@ -26,7 +29,6 @@ if sys.stdout.encoding.lower() != "utf-8":
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import blacklist
 from app.config import settings
 from app.middleware.gateway import GatewayMiddleware
 from app.otel import logger as otel_logger
@@ -34,7 +36,7 @@ from app.proxy.proxy import router as proxy_router
 
 app = FastAPI(
     title="Target 서버 - WAF 게이트웨이",
-    description="동적 웹 요청 중 비정상 트래픽을 실시간으로 탐지·차단하고, 탐지 로그를 OTel로 중앙 수집 전송",
+    description="동적 웹 요청 중 비정상 트래픽을 실시간으로 탐지하고, 탐지 로그를 OTel로 중앙 수집 전송 (차단은 하지 않음)",
     version="0.2.0",
 )
 
@@ -65,7 +67,6 @@ app.add_middleware(GatewayMiddleware)
 
 # 라우터 등록
 app.include_router(proxy_router, prefix="/proxy")
-app.include_router(blacklist.router)
 
 
 @app.get("/health")

@@ -1,14 +1,16 @@
 # OTel Collector 설정 (ConfigMap으로 배포). 3계층 로그를 한 곳에서 "중앙 수집"해서
-# 단일 OTLP 익스포터로 Central SIEM에 보내는 게 이 Collector의 역할이다.
+# 단일 OTLP(gRPC) 익스포터로 Central SIEM(Otel Gateway)에 보내는 게 이 Collector의 역할이다.
 #
-#   ① 관문(WAF)     : backend Pod가 OpenTelemetry SDK로 이 Collector에 OTLP(HTTP) push
-#                      (backend/app/otel/logger.py, resource.log.source=waf는 SDK가 이미 태깅)
+#   ① 관문(WAS)     : Juice Shop 앞단 nginx-was-logger 사이드카가 stdout에 남기는 JSON
+#                      access log를 filelog로 tail (juice-shop-nginx-configmap.yaml 참고)
 #   ② 내부 런타임(Falco): Falco 파드의 stdout(json_output) 로그 파일을 filelog로 tail
 #   ③ 제어판(K8s Audit) : kube-apiserver가 남긴 audit.log 파일을 filelog로 tail
 #
-# Central SIEM이 아직 없으므로 otlphttp 익스포터의 목적지는 환경변수(CENTRAL_SIEM_OTLP_ENDPOINT,
-# otel-collector-deployment.yaml에 placeholder로 정의됨)로 빼두고, debug 익스포터를 나란히
-# 붙여서 `kubectl logs`로 "실제로 수집되는지"를 지금 단계에서도 확인할 수 있게 했다.
+# 예전에는 ①을 FastAPI WAF 백엔드(backend/)가 OTel SDK로 직접 OTLP push하는 방식으로
+# 수집했다. WAF가 하던 차단 로직이 전부 사라지고 로그 발생지 역할만 남으면서, 그 역할이
+# Juice Shop 쪽 WAS 로그(nginx-was-logger)와 사실상 중복돼 WAS 쪽으로 완전히 대체했다.
+# WAF 백엔드 코드/배포 매니페스트는 지우지 않고 주석 처리만 해뒀다 (backend/backend-deployment.yaml,
+# 아래 otlp 리시버·logs/waf 파이프라인) — 나중에 다시 필요해지면 주석만 풀면 된다.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -16,13 +18,32 @@ metadata:
 data:
   config.yaml: |
     receivers:
-      # ① 관문(WAF) - backend Pod가 직접 push하는 경로
-      otlp:
-        protocols:
-          grpc:
-            endpoint: 0.0.0.0:4317
-          http:
-            endpoint: 0.0.0.0:4318
+      # ① 관문(WAS) - Juice Shop 옆 nginx-was-logger 사이드카의 stdout access log를 tail
+      filelog/was:
+        include:
+          - /var/log/pods/default_juice-shop-*/nginx-was-logger/*.log
+        include_file_path: true
+        start_at: end
+        operators:
+          # Falco와 마찬가지로 containerd/CRI 로그 포맷을 먼저 벗겨내고
+          - type: container
+          # 그 안의 body(JSON 한 줄)를 실제 속성으로 파싱
+          - type: json_parser
+            timestamp:
+              parse_from: attributes.time
+              layout: "%Y-%m-%dT%H:%M:%S%z"
+          - type: add
+            field: resource["log.source"]
+            value: "was"
+
+      # (비활성화됨 - 주석 처리) 예전 ① 관문(WAF) - backend Pod가 OTel SDK로 직접 push하던 경로.
+      # WAF 백엔드를 다시 배포해서 쓰게 되면 아래 주석을 풀고 logs/waf 파이프라인도 함께 살릴 것.
+      # otlp:
+      #   protocols:
+      #     grpc:
+      #       endpoint: 0.0.0.0:4317
+      #     http:
+      #       endpoint: 0.0.0.0:4318
 
       # ② 내부 런타임(Falco) - 컨테이너 stdout 로그 파일(CRI 포맷)을 tail
       filelog/falco:
@@ -60,22 +81,33 @@ data:
       # Central SIEM 없이도 로컬에서 "실제로 나가는지" 확인하기 위한 콘솔 출력
       debug:
         verbosity: detailed
-      # 실제 중앙 전송 경로. 목적지는 배포 매니페스트의 CENTRAL_SIEM_OTLP_ENDPOINT로 채운다.
+      # 실제 중앙 전송 경로 - gRPC(OTLP)로 Central SIEM(Otel Gateway)에 전송.
+      # 각 노드의 otel-collector(DaemonSet)가 로컬에서 모은 로그를 gRPC로 쏘고,
+      # 중앙의 Otel Gateway가 이를 받아낸다. HTTP보다 빠르고 효율적이라 gRPC를 쓴다.
+      # 목적지는 배포 매니페스트의 CENTRAL_SIEM_OTLP_ENDPOINT로 채운다.
       # (아직 미구축 상태라 연결 실패는 예상된 상황 - 익스포터가 재시도만 하고 Collector는 안 죽는다)
-      otlphttp:
+      otlp:
         endpoint: ${env:CENTRAL_SIEM_OTLP_ENDPOINT}
+        tls:
+          # Central SIEM이 아직 없어 실제 인증서가 없는 placeholder 단계라 평문 gRPC로 연결.
+          # 실제 Central SIEM 주소가 정해지고 TLS를 쓰게 되면 이 옵션을 지워야 한다.
+          insecure: true
 
     service:
       pipelines:
-        logs/waf:
-          receivers: [otlp]
+        logs/was:
+          receivers: [filelog/was]
           processors: [batch]
-          exporters: [debug, otlphttp]
+          exporters: [debug, otlp]
+        # (비활성화됨 - 주석 처리) logs/waf:
+        #   receivers: [otlp]
+        #   processors: [batch]
+        #   exporters: [debug, otlp]
         logs/falco:
           receivers: [filelog/falco]
           processors: [batch]
-          exporters: [debug, otlphttp]
+          exporters: [debug, otlp]
         logs/k8s_audit:
           receivers: [filelog/k8s_audit]
           processors: [batch]
-          exporters: [debug, otlphttp]
+          exporters: [debug, otlp]
