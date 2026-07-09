@@ -256,19 +256,20 @@ WAS_URL=http://localhost:3000 EVENTS_PER_SECOND=5 python dummy_generator.py
 ### ✅ 테스트 흐름
 1. `dummy_generator.py` 실행 → 요청이 Juice Shop까지 정상적으로 도달하는지(응답 코드) 확인.
 2. otel-collector의 `debug` 출력에서 `log.source: Str(was)` 레코드가 실시간으로 찍히는지 확인:
-   ```bash
-   kubectl logs daemonset/otel-collector -c otel-collector -f | grep -A5 "log.source: Str(was)"
+   ```powershell
+   kubectl logs -f -l app=otel-collector -c otel-collector --prefix --max-log-requests=3
+   Select-String -SimpleMatch "log.source: Str(was)" -Context 0,5
    ```
 3. Falco가 실제로 탐지 중인지 확인 (클러스터 안에서 민감 파일 접근을 흉내내는 파드 실행):
-   ```bash
-   kubectl run attacker --rm -it --image=ubuntu -- bash -c "cat /etc/shadow"
+   ```powershell
+   kubectl logs -f -l app=otel-collector -c otel-collector --prefix --max-log-requests=3
+   Select-String -SimpleMatch "log.source: Str(falco)" -Context 0,5
    ```
    otel-collector 로그에서 `log.source: Str(falco)` 레코드 확인.
 4. K8s Audit 로그가 컨트롤 플레인 이상 행위를 잡는지 확인 (RBAC 권한 상승 시도 흉내):
-   ```bash
-   kubectl create clusterrolebinding demo-privesc \
-     --clusterrole=cluster-admin --serviceaccount=default:default
-   kubectl delete clusterrolebinding demo-privesc
+   ```powershell
+   kubectl logs -f -l app=otel-collector -c otel-collector --prefix --max-log-requests=3
+   Select-String -SimpleMatch "log.source: Str(k8s-audit)" -Context 0,5
    ```
    otel-collector 로그에서 `log.source: Str(k8s-audit)` 레코드 확인 (`k8s-audit-logs/audit.log`에도
    그대로 남아있음).
