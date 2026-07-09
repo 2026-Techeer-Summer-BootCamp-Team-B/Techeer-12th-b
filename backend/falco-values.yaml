@@ -1,0 +1,18 @@
+# 1. Falco 헬름 리포지토리 등록 (최초 1회)
+# helm repo add falcosecurity https://falcosecurity.github.io/charts
+#helm repo update
+
+# 2. Git으로 공유받은 values.yaml 파일을 사용해 설치/업그레이드
+#helm upgrade --install falco falcosecurity/falco -n falco --create-namespace -f falco-values.yaml
+#
+# http_output(백엔드 /api/alerts로 직접 POST)은 더 이상 쓰지 않는다. 이제 Falco는
+# json_output만 켜두고 stdout에 JSON을 남기면, otel-collector가 Falco 파드의 컨테이너 로그
+# 파일(/var/log/pods/...)을 tail해서 OTLP로 중앙 수집한다 (otel-collector-config.yaml 참고).
+
+driver:
+  kind: modern_ebpf
+
+tty: true
+
+falco:
+  json_output: true

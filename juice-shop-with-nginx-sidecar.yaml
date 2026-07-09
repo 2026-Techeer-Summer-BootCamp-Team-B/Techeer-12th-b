@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: juice-shop
+  labels:
+    app: juice-shop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: juice-shop
+  template:
+    metadata:
+      labels:
+        app: juice-shop
+    spec:
+      containers:
+        # 원래 있던 Juice Shop 컨테이너 - 외부에 직접 노출하지 않고
+        # 같은 Pod 안의 nginx가 앞단에서 받아서 넘겨주는 구조로 바뀜
+        - name: juice-shop
+          image: bkimminich/juice-shop
+          ports:
+            - containerPort: 3000
+
+        # 신규 - WAS 로그 소스 역할. Juice Shop 자체는 요청 로그를 안 남기므로
+        # 이 nginx가 대신 access log를 stdout에 남긴다.
+        - name: nginx-was-logger
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: juice-shop-nginx-conf
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: juice-shop
+spec:
+  selector:
+    app: juice-shop
+  ports:
+    # 이제 서비스가 가리키는 포트는 nginx(8080) - 
+    # 클라이언트는 항상 nginx를 거쳐서 juice-shop에 도달하게 됨
+    - port: 3000
+      targetPort: 8080

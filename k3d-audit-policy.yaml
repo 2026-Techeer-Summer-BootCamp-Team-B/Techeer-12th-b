@@ -1,0 +1,66 @@
+# Kubernetes(kube-apiserver) Audit 정책.
+# 목적: 컨트롤 플레인 방어 - 클러스터 내부에서 발생하는
+#   1) 비정상적인 API 호출
+#   2) 과도한 권한(RBAC) 요청 (Role/ClusterRole/RoleBinding/ClusterRoleBinding 변경)
+#   3) 서비스 어카운트(ServiceAccount) 탈취 시도 (SA/토큰 발급, Secret 조회)
+# 를 감지하기 위한 근거 로그를 남긴다. Falco(런타임)·WAS 로그(nginx)와 마찬가지로
+# 지금 단계에서는 파일로만 적재하고, 추후 OTel Collector가 이 파일을 tail해서 수집한다.
+#
+# 사용법: k3d-cluster-config.yaml이 이 파일을 서버 노드의
+#   /etc/kubernetes/audit-policy.yaml 로 마운트하고,
+#   kube-apiserver에 --audit-policy-file 인자로 넘긴다.
+apiVersion: audit.k8s.io/v1
+kind: Policy
+# RequestReceived 단계는 ResponseComplete와 내용이 중복돼서 로그量만 두 배로 늘어난다.
+omitStages:
+  - "RequestReceived"
+rules:
+  # ── 노이즈 제거: 시스템 컴포넌트의 반복적인 조회성 호출은 기록하지 않음 ──
+  - level: None
+    userGroups:
+      - "system:nodes"
+    verbs: ["get", "list", "watch"]
+
+  - level: None
+    users:
+      - "system:kube-scheduler"
+      - "system:kube-controller-manager"
+      - "system:kube-proxy"
+    verbs: ["get", "list", "watch"]
+
+  - level: None
+    nonResourceURLs:
+      - "/healthz*"
+      - "/livez*"
+      - "/readyz*"
+      - "/metrics"
+      - "/version"
+
+  # ── RBAC 권한 상승/과다 요청 탐지: 실제로 어떤 권한을 부여했는지 봐야 하므로
+  #    요청/응답 본문까지 전부 남긴다 ──
+  - level: RequestResponse
+    resources:
+      - group: "rbac.authorization.k8s.io"
+        resources:
+          - "roles"
+          - "clusterroles"
+          - "rolebindings"
+          - "clusterrolebindings"
+    verbs: ["create", "update", "patch", "delete"]
+
+  # ── ServiceAccount 탈취 시도 탐지: 누가/언제/어떤 SA에 접근했는지가 핵심이라
+  #    Metadata 레벨로 남긴다 (Secret/토큰 원문을 로그 파일에 그대로 남기지 않기 위함) ──
+  - level: Metadata
+    resources:
+      - group: ""
+        resources:
+          - "serviceaccounts"
+          - "serviceaccounts/token"
+          - "secrets"
+
+  # ── 그 외 클러스터 상태를 바꾸는 모든 요청은 최소 Metadata 레벨로 기록 ──
+  - level: Metadata
+    verbs: ["create", "update", "patch", "delete", "deletecollection"]
+
+  # ── 나머지 API 호출(조회 포함)도 비정상 호출 패턴 탐지를 위해 기본적으로 수집 ──
+  - level: Metadata

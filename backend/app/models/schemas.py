@@ -1,6 +1,9 @@
 """
-노션 ERD 초안(AttackLog / IPBlacklist / DetectionRule)을 그대로 코드로 옮긴 파일.
+노션 ERD 초안(AttackLog / IPBlacklist)을 그대로 코드로 옮긴 파일.
 API 요청/응답과 저장 형식 모두 여기 정의된 모델을 기준으로 맞춘다.
+
+DetectionRule(정규식을 DB로 관리)은 Postgres 제거와 함께 삭제됨 - 실제로도 탐지 엔진은
+signatures.py에 하드코딩된 SIGNATURES만 참조하고 있어 연결된 적이 없었다.
 """
 from datetime import datetime
 from enum import Enum
@@ -11,14 +14,36 @@ from pydantic import BaseModel, Field
 
 
 class AttackType(str, Enum):
-    """공격 유형. 새 탐지 로직을 추가하면 여기에도 반드시 추가할 것."""
+    """공격 유형. 새 탐지 로직을 추가하면 여기에도 반드시 추가할 것.
+
+    22종 공격 목록 기준으로 정리 (팀 문서 "WAF 방어 대상 공격 유형" 참고).
+    IDOR와 GraphQL 공격은 팀 문서에서 취소선 처리(보류)되어 있어 일단 주석 처리함 —
+    필요해지면 주석만 풀면 됨.
+    """
     SQLI = "sqli"
     XSS = "xss"
-    JWT_FORGERY = "jwt_forgery"
     OS_COMMAND_INJECTION = "os_command_injection"
-    PATH_TRAVERSAL = "path_traversal"
-    FILE_UPLOAD = "file_upload"
+    PATH_TRAVERSAL = "path_traversal"          # LFI / Directory Traversal
+    RFI = "rfi"                                # Remote File Inclusion
+    FILE_UPLOAD = "file_upload"                # Web Shell Upload
+    SSTI = "ssti"                              # Server-Side Template Injection
+    XXE = "xxe"                                # XML External Entity
+    SSRF = "ssrf"                              # Server-Side Request Forgery
+    HPP = "hpp"                                # HTTP Parameter Pollution
+    CSRF = "csrf"                              # Cross-Site Request Forgery
+    # IDOR = "idor"                            # 보류 (팀 문서에서 취소선 처리됨)
+    NOSQLI = "nosqli"                          # NoSQL Injection
+    INSECURE_DESERIALIZATION = "insecure_deserialization"
+    OPEN_REDIRECT = "open_redirect"
+    CRLF_INJECTION = "crlf_injection"
+    # GRAPHQL_ATTACK = "graphql_attack"         # 보류 (팀 문서에서 취소선 처리됨)
+    LDAP_INJECTION = "ldap_injection"
+    XPATH_INJECTION = "xpath_injection"
+    CORS_ABUSE = "cors_abuse"                  # CORS Misconfiguration 악용
+    JWT_FORGERY = "jwt_forgery"
     BRUTE_FORCE = "brute_force"
+    BAD_BOT = "bad_bot"                        # 알려진 해킹 툴/스캐너 User-Agent
+    RATE_LIMIT_ABUSE = "rate_limit_abuse"       # 짧은 시간 내 과다 요청
 
 
 class RiskLevel(str, Enum):
@@ -43,30 +68,10 @@ class AttackLog(BaseModel):
     payload_snippet: str = Field(max_length=200)
     user_agent: Optional[str] = None
     matched_rule_id: Optional[str] = None
-    blocked: bool = True
+    # WAF는 더 이상 요청을 차단하지 않고 로그만 남긴다 (실제 차단은 WAS 책임) — 기본값 False.
+    # engine.py의 alg:none JWT 위조 탐지처럼 "차단에 준하는 심각도"를 표시하고 싶은 경우에만
+    # 호출부에서 명시적으로 True를 넘긴다.
+    blocked: bool = False
+    target_name: Optional[str] = None
+    mitre_technique_id: Optional[str] = None
     risk_level: RiskLevel = RiskLevel.LOW
-
-
-class IPBlacklistEntry(BaseModel):
-    """담당: 이용욱 (게이트웨이) — Rate Limiting/Brute Force 결과로 자동 등록됨"""
-    ip: str
-    reason: str
-    hit_count: int = 1
-    blocked_at: datetime = Field(default_factory=datetime.utcnow)
-    expires_at: Optional[datetime] = None
-    is_manual: bool = False
-
-
-class DetectionRule(BaseModel):
-    """
-    담당: 윤재영 (서버·DB 룰) / 심다움 (클라이언트 룰)
-    정규식을 코드에 하드코딩하지 않고 데이터로 관리해서
-    코드 수정 없이 룰만 추가/비활성화할 수 있게 함.
-    """
-    id: str = Field(default_factory=lambda: str(uuid4()))
-    name: str
-    attack_type: AttackType
-    pattern: str  # 정규표현식 패턴
-    severity: RiskLevel = RiskLevel.MEDIUM
-    enabled: bool = True
-    created_by: Optional[str] = None

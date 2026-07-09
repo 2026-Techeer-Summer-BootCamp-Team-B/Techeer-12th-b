@@ -1,0 +1,113 @@
+# OTel Collector 설정 (ConfigMap으로 배포). 3계층 로그를 한 곳에서 "중앙 수집"해서
+# 단일 OTLP(gRPC) 익스포터로 Central SIEM(Otel Gateway)에 보내는 게 이 Collector의 역할이다.
+#
+#   ① 관문(WAS)     : Juice Shop 앞단 nginx-was-logger 사이드카가 stdout에 남기는 JSON
+#                      access log를 filelog로 tail (juice-shop-nginx-configmap.yaml 참고)
+#   ② 내부 런타임(Falco): Falco 파드의 stdout(json_output) 로그 파일을 filelog로 tail
+#   ③ 제어판(K8s Audit) : kube-apiserver가 남긴 audit.log 파일을 filelog로 tail
+#
+# 예전에는 ①을 FastAPI WAF 백엔드(backend/)가 OTel SDK로 직접 OTLP push하는 방식으로
+# 수집했다. WAF가 하던 차단 로직이 전부 사라지고 로그 발생지 역할만 남으면서, 그 역할이
+# Juice Shop 쪽 WAS 로그(nginx-was-logger)와 사실상 중복돼 WAS 쪽으로 완전히 대체했다.
+# WAF 백엔드 코드/배포 매니페스트는 지우지 않고 주석 처리만 해뒀다 (backend/backend-deployment.yaml,
+# 아래 otlp 리시버·logs/waf 파이프라인) — 나중에 다시 필요해지면 주석만 풀면 된다.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+data:
+  config.yaml: |
+    receivers:
+      # ① 관문(WAS) - Juice Shop 옆 nginx-was-logger 사이드카의 stdout access log를 tail
+      filelog/was:
+        include:
+          - /var/log/pods/default_juice-shop-*/nginx-was-logger/*.log
+        include_file_path: true
+        start_at: end
+        operators:
+          # Falco와 마찬가지로 containerd/CRI 로그 포맷을 먼저 벗겨내고
+          - type: container
+          # 그 안의 body(JSON 한 줄)를 실제 속성으로 파싱
+          - type: json_parser
+            timestamp:
+              parse_from: attributes.time
+              layout: "%Y-%m-%dT%H:%M:%S%z"
+          - type: add
+            field: resource["log.source"]
+            value: "was"
+
+      # (비활성화됨 - 주석 처리) 예전 ① 관문(WAF) - backend Pod가 OTel SDK로 직접 push하던 경로.
+      # WAF 백엔드를 다시 배포해서 쓰게 되면 아래 주석을 풀고 logs/waf 파이프라인도 함께 살릴 것.
+      # otlp:
+      #   protocols:
+      #     grpc:
+      #       endpoint: 0.0.0.0:4317
+      #     http:
+      #       endpoint: 0.0.0.0:4318
+
+      # ② 내부 런타임(Falco) - 컨테이너 stdout 로그 파일(CRI 포맷)을 tail
+      filelog/falco:
+        include:
+          - /var/log/pods/falco_falco-*/falco/*.log
+        include_file_path: true
+        start_at: end
+        operators:
+          # containerd/CRI 로그 라인 포맷(타임스탬프+스트림+P/F 태그)을 파싱하고
+          # 파일 경로에서 k8s 네임스페이스/파드/컨테이너 이름까지 함께 뽑아준다.
+          - type: container
+          - type: add
+            field: resource["log.source"]
+            value: "falco"
+
+      # ③ 제어판(K8s Audit) - kube-apiserver가 남긴 JSON 감사 로그를 tail
+      # (k3d-audit-policy.yaml 정책에 따라 비정상 API 호출 / RBAC 과다 요청 / SA 탈취 시도 위주로 기록됨)
+      filelog/k8s_audit:
+        include:
+          - /var/log/kubernetes/audit/audit*.log
+        start_at: beginning
+        operators:
+          - type: json_parser
+            timestamp:
+              parse_from: attributes.stageTimestamp
+              layout: "%Y-%m-%dT%H:%M:%S.%fZ"
+          - type: add
+            field: resource["log.source"]
+            value: "k8s-audit"
+
+    processors:
+      batch: {}
+
+    exporters:
+      # Central SIEM 없이도 로컬에서 "실제로 나가는지" 확인하기 위한 콘솔 출력
+      debug:
+        verbosity: detailed
+      # 실제 중앙 전송 경로 - gRPC(OTLP)로 Central SIEM(Otel Gateway)에 전송.
+      # 각 노드의 otel-collector(DaemonSet)가 로컬에서 모은 로그를 gRPC로 쏘고,
+      # 중앙의 Otel Gateway가 이를 받아낸다. HTTP보다 빠르고 효율적이라 gRPC를 쓴다.
+      # 목적지는 배포 매니페스트의 CENTRAL_SIEM_OTLP_ENDPOINT로 채운다.
+      # (아직 미구축 상태라 연결 실패는 예상된 상황 - 익스포터가 재시도만 하고 Collector는 안 죽는다)
+      otlp:
+        endpoint: ${env:CENTRAL_SIEM_OTLP_ENDPOINT}
+        tls:
+          # Central SIEM이 아직 없어 실제 인증서가 없는 placeholder 단계라 평문 gRPC로 연결.
+          # 실제 Central SIEM 주소가 정해지고 TLS를 쓰게 되면 이 옵션을 지워야 한다.
+          insecure: true
+
+    service:
+      pipelines:
+        logs/was:
+          receivers: [filelog/was]
+          processors: [batch]
+          exporters: [debug, otlp]
+        # (비활성화됨 - 주석 처리) logs/waf:
+        #   receivers: [otlp]
+        #   processors: [batch]
+        #   exporters: [debug, otlp]
+        logs/falco:
+          receivers: [filelog/falco]
+          processors: [batch]
+          exporters: [debug, otlp]
+        logs/k8s_audit:
+          receivers: [filelog/k8s_audit]
+          processors: [batch]
+          exporters: [debug, otlp]

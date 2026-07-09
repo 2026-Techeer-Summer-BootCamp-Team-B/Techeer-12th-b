@@ -1,48 +1,22 @@
 """
 담당: 심다움 (로그 마스터)
 
-AttackLog 저장소. 초기 뼈대는 인메모리 리스트로 구현.
-app/api/logs.py가 이 모듈의 get_logs / get_log_by_id를 호출한다.
+AttackLog 저장소. Elasticsearch 색인은 제거하고, OTel(OTLP)로 otel-collector에 실시간
+전송하는 방식으로 전환했다 (조회/보관은 이제 Central SIEM 쪽 책임이라 이 파일에는
+get_logs/get_log_by_id 같은 조회 함수가 더 이상 없다).
+
+app/api/logs.py, app/api/stats.py(ES 조회 API)도 같은 이유로 삭제됨.
 """
-from datetime import datetime
-from typing import List, Optional, Tuple
-
-from app.models.schemas import AttackLog, AttackType, RiskLevel
-
-_logs: List[AttackLog] = []
+from app.detection.mitre_mapping import get_mitre_mapping
+from app.models.schemas import AttackLog
+from app.otel.logger import emit_attack_log
 
 
 def add_log(log: AttackLog) -> None:
-    _logs.append(log)
+    """공격 로그 하나를 OTel Collector로 전송. 전송 전에 ATT&CK 매핑을 채워 넣는다."""
+    if log.mitre_technique_id is None:
+        mapping = get_mitre_mapping(log.attack_type)
+        if mapping is not None:
+            log.mitre_technique_id = mapping["technique_id"]
 
-
-def get_logs(
-    *,
-    attack_type: Optional[AttackType] = None,
-    source_ip: Optional[str] = None,
-    risk_level: Optional[RiskLevel] = None,
-    start_date: Optional[datetime] = None,
-    end_date: Optional[datetime] = None,
-    page: int = 1,
-    page_size: int = 20,
-) -> Tuple[List[AttackLog], int]:
-    filtered = _logs
-    if attack_type is not None:
-        filtered = [log for log in filtered if log.attack_type == attack_type]
-    if source_ip is not None:
-        filtered = [log for log in filtered if log.source_ip == source_ip]
-    if risk_level is not None:
-        filtered = [log for log in filtered if log.risk_level == risk_level]
-    if start_date is not None:
-        filtered = [log for log in filtered if log.timestamp >= start_date]
-    if end_date is not None:
-        filtered = [log for log in filtered if log.timestamp <= end_date]
-
-    total = len(filtered)
-    start = (page - 1) * page_size
-    end = start + page_size
-    return filtered[start:end], total
-
-
-def get_log_by_id(log_id: str) -> Optional[AttackLog]:
-    return next((log for log in _logs if log.id == log_id), None)
+    emit_attack_log(log)

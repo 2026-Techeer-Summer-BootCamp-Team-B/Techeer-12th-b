@@ -1,0 +1,59 @@
+# k3d 클러스터 설정 파일.
+# Falco는 DaemonSet(노드마다 하나씩 뜨는 파드)이라, 노드가 1개뿐이면 사실상 일반
+# Deployment와 다를 게 없다. 서버 1개 + 에이전트 2개(총 3노드)로 구성해서
+# "노드마다 하나씩" 배포되는 걸 실제로 확인할 수 있게 한다.
+#
+# 컨트롤 플레인 방어용 K8s Audit 로그도 여기서 함께 켠다. kube-apiserver가
+# k3d-audit-policy.yaml 정책대로 ./k8s-audit-logs/audit.log 에 JSON 로그를 남기도록
+# --audit-* 인자를 넘긴다 (Falco/WAS 로그와 동일하게, 지금은 파일 적재만 하고 추후
+# OTel Collector가 수집한다).
+#
+# 정책 파일 / 로그 디렉터리 마운트는 이 파일의 volumes: 로는 못 한다 - k3d(Docker)는
+# 상대경로("./foo")를 호스트 bind mount가 아니라 이름 그대로의 빈 도커 볼륨으로 취급해버려서
+# audit-policy.yaml 자리에 빈 디렉터리가 마운트되고 kube-apiserver가 기동 실패한다
+# (실제로 재현 확인함). 그래서 절대경로가 필요한 두 마운트만 아래처럼 cluster create 시
+# --volume 플래그로 넘긴다 (플래그의 경로는 셸이 절대경로로 치환해 주므로 문제없음).
+#
+# 사용법 (반드시 저장소 루트에서 실행):
+#   PowerShell:
+#     k3d cluster create --config k3d-cluster-config.yaml `
+#       --volume "$PWD\k3d-audit-policy.yaml:/etc/kubernetes/audit-policy.yaml@server:0" `
+#       --volume "$PWD\k8s-audit-logs:/var/log/kubernetes/audit@server:0"
+#   bash/zsh:
+#     k3d cluster create --config k3d-cluster-config.yaml \
+#       --volume "$(pwd)/k3d-audit-policy.yaml:/etc/kubernetes/audit-policy.yaml@server:0" \
+#       --volume "$(pwd)/k8s-audit-logs:/var/log/kubernetes/audit@server:0"
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: techeer-ids
+servers: 1
+agents: 2
+options:
+  k3d:
+    wait: true
+    timeout: "120s"
+  k3s:
+    extraArgs:
+      # 컨트롤 플레인 방어용 Audit 로그 활성화 (비정상 API 호출 / RBAC 과다 요청 / SA 탈취 시도 감지)
+      - arg: --kube-apiserver-arg=audit-policy-file=/etc/kubernetes/audit-policy.yaml
+        nodeFilters:
+          - server:0
+      - arg: --kube-apiserver-arg=audit-log-path=/var/log/kubernetes/audit/audit.log
+        nodeFilters:
+          - server:0
+      - arg: --kube-apiserver-arg=audit-log-format=json
+        nodeFilters:
+          - server:0
+      - arg: --kube-apiserver-arg=audit-log-maxage=7
+        nodeFilters:
+          - server:0
+      - arg: --kube-apiserver-arg=audit-log-maxbackup=5
+        nodeFilters:
+          - server:0
+      - arg: --kube-apiserver-arg=audit-log-maxsize=100
+        nodeFilters:
+          - server:0
+  kubeconfig:
+    updateDefaultKubeconfig: true
+    switchCurrentContext: true
