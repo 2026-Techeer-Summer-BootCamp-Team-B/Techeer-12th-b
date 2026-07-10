@@ -154,7 +154,6 @@ def _log_bad_bot(ip: str, path: str, user_agent: str) -> None:
             payload_snippet=f"User-Agent: {user_agent}"[:200],
             user_agent=user_agent,
             matched_rule_id="bad_bot_user_agent",
-            blocked=False,
             risk_level=RiskLevel.MEDIUM,
         )
     )
@@ -170,7 +169,6 @@ def _log_cors_violation(ip: str, path: str, origin: str) -> None:
             http_method="",  # 호출부에서 필요시 채움
             payload_snippet=f"Origin: {origin}"[:200],
             matched_rule_id="cors_violation",
-            blocked=False,
             risk_level=RiskLevel.MEDIUM,
         )
     )
@@ -185,7 +183,6 @@ def _log_rate_limit_exceeded(ip: str, path: str) -> None:
             http_method="",
             payload_snippet="rate_limit_exceeded",
             matched_rule_id="rate_limit_exceeded",
-            blocked=False,
             risk_level=RiskLevel.LOW,
         )
     )
@@ -200,7 +197,6 @@ def _log_brute_force(ip: str, path: str, matched_rule_id: str, risk_level: RiskL
             http_method="",
             payload_snippet=matched_rule_id,
             matched_rule_id=matched_rule_id,
-            blocked=False,
             risk_level=risk_level,
         )
     )

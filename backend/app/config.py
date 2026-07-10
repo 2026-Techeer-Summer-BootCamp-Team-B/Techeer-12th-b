@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     # 비워두면(로컬 개발 등) X-Forwarded-For를 아예 무시하고 직접 연결 IP만 사용.
     trusted_proxies_raw: str = ""
 
+    # WAF 운영 모드 (담당: 심다움) — 분석 서버가 규격화하는 events.normalized 스키마의
+    # waf.mode/waf.blocked 값을 여기서 채운다.
+    # "detection"(기본값): 탐지만 하고 로그만 남김. "prevention": 시연용으로 blocked=True를
+    # 로그에 표시. 실제 요청 차단(403 응답)은 여전히 WAS 책임이라 이 모드가 트래픽을
+    # 막지는 않는다 — 어디까지나 로그에 남는 표시값이다.
+    waf_mode: str = "detection"
+
     class Config:
         env_file = ".env"
 
