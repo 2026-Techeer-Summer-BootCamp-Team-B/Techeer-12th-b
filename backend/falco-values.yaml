@@ -8,6 +8,26 @@
 # http_output(백엔드 /api/alerts로 직접 POST)은 더 이상 쓰지 않는다. 이제 Falco는
 # json_output만 켜두고 stdout에 JSON을 남기면, otel-collector가 Falco 파드의 컨테이너 로그
 # 파일(/var/log/pods/...)을 tail해서 OTLP로 중앙 수집한다 (otel-collector-config.yaml 참고).
+# - 본 values.yaml에서 falcosidekick 관련 설정은 의도적으로 비활성화(enabled: false) 상태임.
+# - 파이썬 백엔드 서버가 로그를 직접 받지 않으므로, 백엔드에 수집용 엔드포인트를 추가하지 말 것.
+# - 로그 포맷 파싱 및 전달 관련 트러블슈팅은 OTel Collector 설정을 확인해야 함.
+
+# 3.로컬 개발 환경 검증 결과 및 제약사항 기록
+
+#   구동 환경: k3d (WSL2 + Docker Desktop 중첩 구조)
+#   엔진 설정: modern_ebpf (CO-RE 기반 프로브 정상 attach 확인)
+#   
+#     로그 경고 및 영향도 요약:
+# 1. libbpf/libpman (connect, creat, open, openat, openat2) TOCTOU 완화 프로그램 부착 실패
+#    - 원인: WSL2 커널이 해당 syscall의 진입점 tracepoint를 표준 리눅스와 다르게 노출하거나 누락함.
+#    - 영향: TOCTOU(Time-of-check-time-of-use) 완화용 보조 기능만 제한될 뿐, 메인 탐지 로직은 
+#            정상 작동함 (로그상 "Detection will continue to work" 확인 및 실테스트 검증 완료).
+# 2. libpman: disabled BPF iterators
+#    - 원인: 컨테이너화된 비-루트 PID 네임스페이스 환경으로 인한 제약.
+#    - 영향: 초기 프로세스 스캔만 비활성화되며 실시간 탐지에는 지장 없음.
+# 3.실서버 배포 시 참고:
+#   실제 운영 서버(Native Linux VM) 환경에서는 위 WSL2 커널 특유의 tracepoint 누락 경고가 
+#   발생하지 않을 가능성이 높음. 배포 후 로그 모니터링 시 해당 경고 유무 재확인 필요.
 
 driver:
   kind: modern_ebpf
