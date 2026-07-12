@@ -1,5 +1,5 @@
 """
-노션 ERD 초안(AttackLog / IPBlacklist)을 그대로 코드로 옮긴 파일.
+노션 ERD 초안(WafAlert / IPBlacklist)을 그대로 코드로 옮긴 파일.
 API 요청/응답과 저장 형식 모두 여기 정의된 모델을 기준으로 맞춘다.
 
 DetectionRule(정규식을 DB로 관리)은 Postgres 제거와 함께 삭제됨 - 실제로도 탐지 엔진은
@@ -66,7 +66,7 @@ class RiskLevel(str, Enum):
     CRITICAL = "CRITICAL"
 
 
-class AttackLog(BaseModel):
+class WafAlert(BaseModel):
     """
     담당: 심다움 (로그 마스터)
     탐지 엔진(윤재영: 서버·DB / 심다움: 클라이언트)이 공격을 잡아내면

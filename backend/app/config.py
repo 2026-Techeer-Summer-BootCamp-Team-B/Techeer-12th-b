@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     rate_limit_window_seconds: int = 60
     rate_limit_max_requests: int = 30
 
-    # OTel Collector 접속 정보 (담당: 심다움) - 탐지된 AttackLog를 여기로 OTLP(HTTP) push.
+    # OTel Collector 접속 정보 (담당: 심다움) - 탐지된 WafAlert를 여기로 OTLP(HTTP) push.
     # otel-collector-deployment.yaml이 만드는 클러스터 내부 Service 이름을 그대로 씀.
     # 필드명을 OTel 표준 환경변수(OTEL_EXPORTER_OTLP_ENDPOINT)에 그대로 맞춰서
     # pydantic-settings가 별도 alias 없이 자동으로 매핑하게 함.

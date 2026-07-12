@@ -10,7 +10,7 @@
               1) decoder.py로 body/헤더를 정규화 (인코딩 우회 방지)
               2) engine.py의 inspect_request로 SQLi/XSS/JWT위조 등 탐지
               3) 공격으로 판정되면
-                   -> AttackLog를 OTel(OTLP)로 otel-collector에 전송 (mitre_technique_id 자동 채움)
+                   -> WafAlert를 OTel(OTLP)로 otel-collector에 전송 (mitre_technique_id 자동 채움)
               4) 판정 결과와 무관하게 항상 settings.target_service_url(Juice Shop)로 그대로
                  전달하고 받은 응답을 브라우저에 그대로 돌려줌 — WAF는 더 이상 차단하지 않고
                  로그만 생성한다 (실제 차단/접근 제어는 WAS 책임).

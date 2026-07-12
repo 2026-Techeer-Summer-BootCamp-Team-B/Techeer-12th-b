@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
-from app.models.schemas import AttackLog, AttackType, RiskLevel
+from app.models.schemas import AttackType, RiskLevel, WafAlert
 from app.storage.log_store import add_log as save_log
 
 # 알려진 해킹 툴 / 스캐너의 User-Agent 키워드 (필요시 계속 추가)
@@ -146,7 +146,7 @@ def check_cors_violation(request: Request) -> bool:
 
 def _log_bad_bot(ip: str, path: str, user_agent: str) -> None:
     save_log(
-        AttackLog(
+        WafAlert(
             source_ip=ip,
             attack_type=AttackType.BAD_BOT,
             target_endpoint=path,
@@ -160,9 +160,9 @@ def _log_bad_bot(ip: str, path: str, user_agent: str) -> None:
 
 
 def _log_cors_violation(ip: str, path: str, origin: str) -> None:
-    """CORS 위반 시도를 AttackLog로 남긴다."""
+    """CORS 위반 시도를 WafAlert로 남긴다."""
     save_log(
-        AttackLog(
+        WafAlert(
             source_ip=ip,
             attack_type=AttackType.CORS_ABUSE,
             target_endpoint=path,
@@ -176,7 +176,7 @@ def _log_cors_violation(ip: str, path: str, origin: str) -> None:
 
 def _log_rate_limit_exceeded(ip: str, path: str) -> None:
     save_log(
-        AttackLog(
+        WafAlert(
             source_ip=ip,
             attack_type=AttackType.RATE_LIMIT_ABUSE,
             target_endpoint=path,
@@ -190,7 +190,7 @@ def _log_rate_limit_exceeded(ip: str, path: str) -> None:
 
 def _log_brute_force(ip: str, path: str, matched_rule_id: str, risk_level: RiskLevel = RiskLevel.MEDIUM) -> None:
     save_log(
-        AttackLog(
+        WafAlert(
             source_ip=ip,
             attack_type=AttackType.BRUTE_FORCE,
             target_endpoint=path,
