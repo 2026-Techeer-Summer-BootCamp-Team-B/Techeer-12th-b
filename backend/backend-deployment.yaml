@@ -36,12 +36,27 @@
 #               value: "http://juice-shop:3000"
 #             - name: OTEL_EXPORTER_OTLP_ENDPOINT
 #               value: "http://otel-collector:4318"
+#             # app/otel/logger.py의 OTel export 실패 fallback 파일 경로 - 아래
+#             # emptyDir 볼륨에 둬서 컨테이너가 재시작돼도(파드 자체가 재스케줄되지
+#             # 않는 한) 같이 사라지지 않게 한다. /tmp(컨테이너 쓰기 레이어)에
+#             # 두면 컨테이너 재시작만으로도 유실될 수 있어서 별도 볼륨으로 뺐다.
+#             - name: OTEL_EXPORT_FALLBACK_PATH
+#               value: "/var/lib/waf-otel-fallback/fallback.jsonl"
+#           volumeMounts:
+#             - name: otel-fallback
+#               mountPath: /var/lib/waf-otel-fallback
 #           readinessProbe:
 #             httpGet:
 #               path: /health
 #               port: 8000
 #             initialDelaySeconds: 3
 #             periodSeconds: 5
+#       volumes:
+#         # emptyDir이라 파드 자체가 삭제/재스케줄되면 이것도 같이 사라진다 -
+#         # 완전한 영속성이 필요하면 PersistentVolumeClaim으로 바꿀 것. 지금은
+#         # "컨테이너 재시작 정도는 버틴다"는 수준의 절충안.
+#         - name: otel-fallback
+#           emptyDir: {}
 # ---
 # apiVersion: v1
 # kind: Service
