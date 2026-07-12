@@ -55,6 +55,10 @@ def emit_attack_log(log: AttackLog) -> None:
     """탐지된 AttackLog 하나를 OTel 로그 레코드로 변환해 Collector로 전송."""
     severity_number, severity_text = _RISK_TO_SEVERITY[log.risk_level]
 
+    # observed_timestamp와 body(바로 아래)는 파이프라인 계약 v1.0의
+    # event.id = sha256_hex(observedTimeUnixNano + "|" + body) 해시 입력값이다.
+    # SIEM 정규화 워커가 이 둘을 그대로 가져다 event.id를 계산하므로, 두 값의 계산/직렬화
+    # 방식(타임스탬프 인코딩, JSON 직렬화 등)을 바꿀 땐 반드시 SIEM 쪽 계약도 함께 갱신할 것.
     _logger.emit(
         LogRecord(
             timestamp=_to_nanos(log.timestamp),
