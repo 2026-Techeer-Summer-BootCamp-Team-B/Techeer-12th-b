@@ -58,7 +58,12 @@ class AttackLog(BaseModel):
     탐지 엔진(윤재영: 서버·DB / 심다움: 클라이언트)이 공격을 잡아내면
     이 형태로 만들어서 log_store에 저장한다.
     """
-    id: str = Field(default_factory=lambda: str(uuid4()))
+    # Target 내부에서만 쓰는 참조용 ID(로그 하나를 가리키는 임시 핸들) - SIEM의
+    # dedupe 키(event.id)가 아니다. 그건 정규화 워커가 OTLP body 원문으로 직접
+    # sha256 해시를 계산해서 만든다(observedTimeUnixNano + body) - Target이 여기서
+    # 뭘 넘기든 정규화 워커는 이 필드를 아예 안 읽는다. 예전엔 이름이 `id`라서
+    # "이게 SIEM event.id인가?"로 헷갈릴 수 있어 internal_ref로 개명함.
+    internal_ref: str = Field(default_factory=lambda: str(uuid4()))
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     source_ip: str
     attack_type: AttackType
