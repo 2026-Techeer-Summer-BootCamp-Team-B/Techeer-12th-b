@@ -267,20 +267,34 @@ curl "http://localhost:8000/proxy/rest/products/search?q=1%20UNION%20SELECT%20us
 # prevention 모드: {"detail":"Request blocked by WAF"} 403
 ```
 
-### 6) 더미 요청 생성기 실행 (로컬, VS Code PowerShell)
-이 스크립트는 WAF를 거치지 않고 Juice Shop(WAS_URL)에 직접 요청을 보낸다 — WAS 로그
-파이프라인(nginx-was-logger → otel-collector) 자체의 동작 검증이 목적이라 의도적으로 WAF를
-우회한다. WAF의 detection/prevention 동작을 확인하려면 위 5)의 `curl ".../proxy/..."`처럼
-`svc/backend`로 직접 요청을 보내야 한다.
+### 6) 더미 공격 생성기 실행 (로컬, VS Code PowerShell)
+`tests/dummy_generator.py`는 IDS-COLLECTOR의 상관분석 시나리오(S1~S18,
+`servers/correlation-engine/app/scenarios/*.yaml`)를 실제로 발화시키는 실제 K8s API
+호출(`tests/k8s_actions.py`, `tests/scenarios.py`) + 실제 WAF 공격 요청(`tests/waf_actions.py`,
+`svc/backend`의 `/proxy/...` 경유)을 수행한다 — 가짜 로그를 주입하는 게 아니라 진짜
+kube-apiserver 감사 로그/Falco 탐지/WAF 탐지 로그가 그대로 나가게 만드는 방식이라 K8s API
+접근(kubeconfig)과 WAF backend port-forward(5단계)가 모두 필요하다.
+
 ```bash
 cd tests
 pip install -r requirements.txt
 
-# Windows(PowerShell)
-$env:WAS_URL="http://localhost:3000"; $env:EVENTS_PER_SECOND="5"; python dummy_generator.py
-# macOS/Linux
-WAS_URL=http://localhost:3000 EVENTS_PER_SECOND=5 python dummy_generator.py
+# CLI로 바로 실행 (예: S4 시나리오 2회, 정상 트래픽 없이)
+$env:WAF_URL="http://localhost:8000"; python dummy_generator.py --scenario S4 --count 2 --no-normal
+# 랜덤 시나리오 3회 (정상 트래픽 섞어서, 기본값)
+python dummy_generator.py --scenario random --count 3
 ```
+
+**버튼으로 실행하고 싶으면** 같은 디렉터리의 미니 웹 UI를 띄운다:
+```bash
+uvicorn dummy_ui.server:app --port 8900 --reload
+```
+브라우저로 `http://localhost:8900` 접속 → 시나리오 선택(또는 랜덤) + 횟수 지정 후
+"공격 시작" 버튼을 누르면 실시간 로그 패널에 지금 어떤 공격이 진행 중인지 바로 뜬다.
+
+⚠️ S5는 `IDS-COLLECTOR/servers/normalizer/app/enrichment.py`의 `_TARGET_POD_NAME`이
+실제 Juice Shop pod 이름과 일치해야 상관분석까지 매칭된다 — 다르면 생성기가 경고를
+출력한다(공격/탐지 자체는 정상 발생, 인시던트 매칭만 안 될 수 있음).
 
 ### ✅ 테스트 흐름
 1. `dummy_generator.py` 실행 → 요청이 Juice Shop까지 정상적으로 도달하는지(응답 코드) 확인.
@@ -289,13 +303,15 @@ WAS_URL=http://localhost:3000 EVENTS_PER_SECOND=5 python dummy_generator.py
    kubectl logs -f -l app=otel-collector -c otel-collector --prefix --max-log-requests=3
    Select-String -SimpleMatch "log.source: Str(was)" -Context 0,5
    ```
-3. Falco가 실제로 탐지 중인지 확인 (클러스터 안에서 민감 파일 접근을 흉내내는 파드 실행):
+3. Falco가 실제로 탐지 중인지 확인 (`dummy_generator.py --scenario S1`이 pod exec로
+   실제 쉘 실행을 만들어낸다 - 수동으로 흉내내려면 `kubectl run attacker --rm -it --image=ubuntu -- bash`):
    ```powershell
    kubectl logs -f -l app=otel-collector -c otel-collector --prefix --max-log-requests=3
    Select-String -SimpleMatch "log.source: Str(falco)" -Context 0,5
    ```
    otel-collector 로그에서 `log.source: Str(falco)` 레코드 확인.
-4. K8s Audit 로그가 컨트롤 플레인 이상 행위를 잡는지 확인 (RBAC 권한 상승 시도 흉내):
+4. K8s Audit 로그가 컨트롤 플레인 이상 행위를 잡는지 확인 (`dummy_generator.py --scenario S3`이
+   RBAC 변경 + pod exec를 실제로 수행한다):
    ```powershell
    kubectl logs -f -l app=otel-collector -c otel-collector --prefix --max-log-requests=3
    Select-String -SimpleMatch "log.source: Str(k8s-audit)" -Context 0,5

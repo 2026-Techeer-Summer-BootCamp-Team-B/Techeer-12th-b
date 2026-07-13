@@ -33,6 +33,15 @@ spec:
               value: "http://juice-shop:3000"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://otel-collector:4318"
+            # kubectl port-forward는 kubelet이 pod의 네트워크 네임스페이스 안에서
+            # 로컬 프록시로 연결하는 방식이라, pod 입장에서 direct 연결 IP가 항상
+            # 127.0.0.1로 보인다. 이 값이 없으면 tests/dummy_generator.py가 보내는
+            # X-Forwarded-For(가짜 IP 다양화, waf_actions.py 참고)가 proxy.py의
+            # get_client_ip()에서 전부 무시돼 WafAlert.source_ip가 매번 127.0.0.1로만
+            # 남는다. 운영 배포(Traefik 뒤)로 바뀌면 이 값을 Traefik의 실제 IP로
+            # 바꿔야 한다 - 127.0.0.1은 로컬 port-forward 테스트 전용.
+            - name: TRUSTED_PROXIES_RAW
+              value: "127.0.0.1"
           readinessProbe:
             httpGet:
               path: /health

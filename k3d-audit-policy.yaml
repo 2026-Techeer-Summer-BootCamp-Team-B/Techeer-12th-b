@@ -37,7 +37,11 @@ rules:
       - "/version"
 
   # ── RBAC 권한 상승/과다 요청 탐지: 실제로 어떤 권한을 부여했는지 봐야 하므로
-  #    요청/응답 본문까지 전부 남긴다 ──
+  #    요청/응답 본문까지 전부 남긴다. 아래 리소스 4개는 IDS-COLLECTOR의
+  #    ids_shared.k8s_constants.RBAC_ALL_RESOURCES와 같은 뜻(normalizer/
+  #    correlation-engine의 severity.yaml·rbac.yaml에도 같은 목록이 있다) - 이
+  #    파일은 kube-apiserver가 직접 읽어서 Python 쪽과 자동으로 공유할 수 없으니
+  #    목록을 바꾸면 IDS-COLLECTOR 쪽도 수동으로 같이 고칠 것 ──
   - level: RequestResponse
     resources:
       - group: "rbac.authorization.k8s.io"
@@ -62,13 +66,15 @@ rules:
     verbs: ["create"]
 
   # ── NodePort Service 노출 탐지: spec.type이 요청 본문에만 있어서 Metadata로는
-  #    판정 불가능하다. 생성 시점 한 번만 보면 되므로 create만 ──
+  #    판정 불가능하다. pod의 hostNetwork류(생성 후 불변)와 달리 spec.type은
+  #    ClusterIP로 만든 뒤 patch/update로 NodePort로 바꿀 수 있어서 create만 보면
+  #    그 경로를 놓친다 - update/patch도 포함 ──
   - level: Request
     resources:
       - group: ""
         resources:
           - "services"
-    verbs: ["create"]
+    verbs: ["create", "update", "patch"]
 
   # ── ConfigMap에 시크릿처럼 평문 자격증명을 넣는 실수 탐지: Secret과 달리 ConfigMap은
   #    암호화/난독화 없이 저장되므로 data/binaryData 내용을 봐야 한다. 생성뿐 아니라

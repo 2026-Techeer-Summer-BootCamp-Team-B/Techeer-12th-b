@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.detection.engine import inspect_request
 from app.middleware.decoder import normalize_query_params, normalize_text
+from app.middleware.gateway import get_client_ip
 from app.storage.log_store import add_log as save_log
 
 router = APIRouter()
@@ -74,7 +75,15 @@ async def proxy_request(path: str, request: Request):
         if k.lower() in _INSPECTED_HEADER_NAMES
     )
 
-    client_ip = request.client.host if request.client else "unknown"
+    # get_client_ip()는 gateway.py의 신뢰-프록시 검증(trusted_proxies)을 그대로
+    # 재사용한다 - settings.trusted_proxies에 등록된 IP에서 직접 연결된 요청만
+    # X-Forwarded-For를 신뢰하고, 그 외에는 request.client.host로 폴백한다(원래
+    # 이 파일의 동작과 동일). 이전엔 여기서만 request.client.host를 직접 썼는데,
+    # 그러면 Traefik 같은 리버스 프록시 뒤에서는 WafAlert.source_ip가 항상 프록시
+    # 자신의 IP로 남아 S4(동일 IP 다발 차단)의 IP 기준 상관분석이 실제 배포
+    # 환경에서 무력화되는 문제가 있었다 - gateway.py의 나머지 탐지(Rate Limit/Bad
+    # Bot 등)와 동일한 신원 판별 로직으로 통일.
+    client_ip = get_client_ip(request)
 
     attack_log = inspect_request(
         source_ip=client_ip,
