@@ -23,7 +23,8 @@ data:
           '"body_bytes_sent":$body_bytes_sent,'
           '"request_time":$request_time,'
           '"user_agent":"$http_user_agent",'
-          '"referer":"$http_referer"'
+          '"referer":"$http_referer",'
+          '"x_forwarded_for":"$http_x_forwarded_for"'
         '}';
 
       access_log /dev/stdout was_json;

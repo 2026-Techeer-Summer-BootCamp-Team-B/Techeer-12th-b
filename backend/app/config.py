@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     rate_limit_window_seconds: int = 60
     rate_limit_max_requests: int = 30
 
-    # OTel Collector 접속 정보 (담당: 심다움) - 탐지된 AttackLog를 여기로 OTLP(HTTP) push.
+    # OTel Collector 접속 정보 (담당: 심다움) - 탐지된 WafAlert를 여기로 OTLP(HTTP) push.
     # otel-collector-deployment.yaml이 만드는 클러스터 내부 Service 이름을 그대로 씀.
     # 필드명을 OTel 표준 환경변수(OTEL_EXPORTER_OTLP_ENDPOINT)에 그대로 맞춰서
     # pydantic-settings가 별도 alias 없이 자동으로 매핑하게 함.
@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     # 이 목록에 있는 IP에서 직접 연결된 요청만 X-Forwarded-For 헤더를 신뢰한다.
     # 비워두면(로컬 개발 등) X-Forwarded-For를 아예 무시하고 직접 연결 IP만 사용.
     trusted_proxies_raw: str = ""
+
+    # WAF 운영 모드 (담당: 심다움) — 분석 서버가 규격화하는 events.normalized 스키마의
+    # waf.mode/waf.blocked 값을 여기서 채운다.
+    # "detection"(기본값): 탐지만 하고 로그만 남김. "prevention": 시연용으로 blocked=True를
+    # 로그에 표시. 실제 요청 차단(403 응답)은 여전히 WAS 책임이라 이 모드가 트래픽을
+    # 막지는 않는다 — 어디까지나 로그에 남는 표시값이다.
+    waf_mode: str = "detection"
 
     class Config:
         env_file = ".env"
