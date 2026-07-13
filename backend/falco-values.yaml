@@ -61,13 +61,13 @@ customRules:
     - macro: in_protected_ns
       condition: (k8s.ns.name in (protected_namespaces))
 
-    # kubectl exec 등 정상 운영 접근에서도 흔히 발화하는 stock 룰이라 기본 NOTICE보다
-    # 눈에 띄게 낮춘다 (팀 severity 매핑: WARNING -> severity 2/medium). 조건은 손대지
-    # 않고 priority만 오버라이드 — F4-5(화이트리스트 매크로 활용 노이즈 튜닝)는 별개 작업으로 남아있음.
-    - rule: Terminal shell in container
-      priority: WARNING
-      override:
-        priority: replace
+    # kubectl exec 등 정상 운영 접근에서도 흔히 발화하는 stock 룰 - Falco 혼자서는 위험
+    # 여부를 판단 못 하고(정상 운영 접근과 구분 불가), 상관분석(S1/S5의 stage2)에서 앞뒤
+    # 맥락과 엮어야 의미가 생긴다. 그래서 priority는 오버라이드하지 않고 기본값(NOTICE)을
+    # 그대로 둔다 - team severity 매핑상 NOTICE/INFORMATIONAL/DEBUG가 전부 1(low)로 같이
+    # 묶여서, 굳이 손대도 결과가 안 바뀐다(검토 완료, 실수로 빠진 게 아님). priority가
+    # 뭐든 룰 이름 문자열만으로 매칭하는 상관분석 동작에는 영향 없음. F4-5(화이트리스트
+    # 매크로 활용 노이즈 튜닝)는 별개 작업으로 남아있음.
 
     # F4-3. Contact K8S API Server From Container — condition은 기본 룰 그대로 두고(이미
     # k8s_containers 매크로로 falco/kube-system 등 인프라 파드는 제외돼 있어 손댈 필요 없음)
