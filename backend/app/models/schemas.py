@@ -1,11 +1,10 @@
 """
-노션 ERD 초안(AttackLog / IPBlacklist)을 그대로 코드로 옮긴 파일.
+노션 ERD 초안(WafAlert / IPBlacklist)을 그대로 코드로 옮긴 파일.
 API 요청/응답과 저장 형식 모두 여기 정의된 모델을 기준으로 맞춘다.
 
 DetectionRule(정규식을 DB로 관리)은 Postgres 제거와 함께 삭제됨 - 실제로도 탐지 엔진은
 signatures.py에 하드코딩된 SIGNATURES만 참조하고 있어 연결된 적이 없었다.
 """
-import hashlib
 from datetime import datetime
 from enum import Enum
 from typing import Literal, Optional
@@ -16,9 +15,16 @@ from pydantic import BaseModel, Field
 from app.config import settings
 
 
-def _new_event_id() -> str:
-    """분석 서버 규격(event.id, 64자리 hex)에 맞춰 UUID4를 SHA-256으로 해싱한다."""
-    return hashlib.sha256(uuid4().bytes).hexdigest()
+def _new_internal_ref() -> str:
+    """이 프로세스 안에서만 쓰는 상관용 참조값 — event.id 아님.
+
+    파이프라인 계약 v1.0 기준 event.id = sha256_hex(observedTimeUnixNano + "|" + body)이고,
+    이 계산은 SIEM 정규화 워커가 이 서비스가 내보내는 OTLP 레코드의 observed_timestamp/body를
+    가지고 수행한다 (app/otel/logger.py 참고). 여기서는 그 값을 복제하지 않는다 — 애초에
+    body(=model_dump_json() 결과)에 이 필드가 포함되므로 "자기 자신을 포함한 body의 해시"는
+    성립할 수 없다.
+    """
+    return str(uuid4())
 
 
 class AttackType(str, Enum):
@@ -60,14 +66,14 @@ class RiskLevel(str, Enum):
     CRITICAL = "CRITICAL"
 
 
-class AttackLog(BaseModel):
+class WafAlert(BaseModel):
     """
     담당: 심다움 (로그 마스터)
     탐지 엔진(윤재영: 서버·DB / 심다움: 클라이언트)이 공격을 잡아내면
     이 형태로 만들어서 log_store에 저장한다.
     """
-    # 분석 서버가 event.id로 그대로 매핑하는 필드라 64자리 hex로 맞춘다.
-    id: str = Field(default_factory=_new_event_id)
+    # 내부 상관/디버깅용 참조값일 뿐 event.id가 아님 — 자세한 이유는 _new_internal_ref() 참고.
+    internal_ref: str = Field(default_factory=_new_internal_ref)
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     source_ip: str
     attack_type: AttackType

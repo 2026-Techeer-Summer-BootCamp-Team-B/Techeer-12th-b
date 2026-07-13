@@ -3,10 +3,6 @@
 
 시스템의 입구를 담당하는 미들웨어.
 
-WAF는 더 이상 아무것도 차단하지 않는다 — 실제 접근 제어(차단/락아웃)는 WAS(보호 대상
-서비스) 쪽 책임이고, 이 미들웨어는 의심스러운 트래픽을 "탐지해서 로그로 남기는" 역할만
-한다 (Redis 기반 블랙리스트/계정 잠금 저장소도 그래서 제거됨 — 상태를 들고 있을 이유가
-없어졌다):
 1) Bad Bot 탐지 (알려진 해킹 툴 User-Agent)
 2) CORS 위반 탐지 (화이트리스트에 없는 Origin에서의 브라우저 요청)
 3) Rate Limiting 초과 탐지 (짧은 시간에 너무 많은 요청)
@@ -31,7 +27,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
-from app.models.schemas import AttackLog, AttackType, RiskLevel
+from app.models.schemas import AttackType, RiskLevel, WafAlert
 from app.storage.log_store import add_log as save_log
 
 # 알려진 해킹 툴 / 스캐너의 User-Agent 키워드 (필요시 계속 추가)
@@ -146,7 +142,7 @@ def check_cors_violation(request: Request) -> bool:
 
 def _log_bad_bot(ip: str, path: str, user_agent: str) -> None:
     save_log(
-        AttackLog(
+        WafAlert(
             source_ip=ip,
             attack_type=AttackType.BAD_BOT,
             target_endpoint=path,
@@ -160,9 +156,9 @@ def _log_bad_bot(ip: str, path: str, user_agent: str) -> None:
 
 
 def _log_cors_violation(ip: str, path: str, origin: str) -> None:
-    """CORS 위반 시도를 AttackLog로 남긴다."""
+    """CORS 위반 시도를 WafAlert로 남긴다."""
     save_log(
-        AttackLog(
+        WafAlert(
             source_ip=ip,
             attack_type=AttackType.CORS_ABUSE,
             target_endpoint=path,
@@ -176,7 +172,7 @@ def _log_cors_violation(ip: str, path: str, origin: str) -> None:
 
 def _log_rate_limit_exceeded(ip: str, path: str) -> None:
     save_log(
-        AttackLog(
+        WafAlert(
             source_ip=ip,
             attack_type=AttackType.RATE_LIMIT_ABUSE,
             target_endpoint=path,
@@ -190,7 +186,7 @@ def _log_rate_limit_exceeded(ip: str, path: str) -> None:
 
 def _log_brute_force(ip: str, path: str, matched_rule_id: str, risk_level: RiskLevel = RiskLevel.MEDIUM) -> None:
     save_log(
-        AttackLog(
+        WafAlert(
             source_ip=ip,
             attack_type=AttackType.BRUTE_FORCE,
             target_endpoint=path,

@@ -32,27 +32,30 @@ spec:
             - --config=/etc/otelcol-contrib/config.yaml
           env:
             # host.docker.internal 경유는 버렸다 - k3d 노드(Docker Desktop VM 위 컨테이너)에서
-            # 나가서 macOS 호스트로 갔다가 docker-proxy를 거쳐 다시 otel-collector 컨테이너로
-            # 들어오는 중첩 NAT 경로인데, 이 경로에서 gRPC(h2c) 핸드셰이크가 preface 단계에서
-            # 깨지는 문제가 있었다 ("error reading server preface: EOF"). TCP connect는 되는데
-            # HTTP/2 핸드셰이크만 실패하는 걸 보면 vpnkit(Docker Desktop의 유저스페이스 NAT
-            # 프록시) 쪽 문제로 보임.
+            # 나가서 호스트로 갔다가 docker-proxy를 거쳐 다시 컨테이너로 들어오는 중첩 NAT
+            # 경로인데, 이 경로에서 gRPC(h2c) 핸드셰이크가 preface 단계에서 깨지는 문제가
+            # 있었다 ("error reading server preface: EOF"). TCP connect는 되는데 HTTP/2
+            # 핸드셰이크만 실패하는 걸 보면 vpnkit(Docker Desktop의 유저스페이스 NAT 프록시)
+            # 쪽 문제로 보임.
             #
-            # 어차피 k3d 노드도 ids-collector의 docker-compose 컨테이너들도 같은 Docker
+            # 어차피 k3d 노드도 IDS-COLLECTOR의 docker-compose 컨테이너들도 같은 Docker
             # Desktop VM 위의 형제 컨테이너라 host.docker.internal로 나갔다 들어올 이유가
-            # 없다. 대신 k3d 노드 컨테이너들을 ids-collector의 docker 네트워크
-            # (ids-collector_default)에 직접 붙이고 (`docker network connect
-            # ids-collector_default <k3d 노드 컨테이너 이름>`, 3개 노드 전부), otel-collector
-            # 컨테이너의 그 네트워크상 IP로 바로 찌른다 - 중첩 NAT를 아예 건너뛴다.
+            # 없다. 대신 k3d 노드 컨테이너 3개(server-0/agent-0/agent-1) 전부를
+            # IDS-COLLECTOR가 쓰는 공유 네트워크 siem-net에 직접 붙인다:
+            #   docker network connect siem-net k3d-techeer-ids-server-0
+            #   docker network connect siem-net k3d-techeer-ids-agent-0
+            #   docker network connect siem-net k3d-techeer-ids-agent-1
             #
-            # 172.18.0.6은 `docker inspect ids-collector-otel-collector-1`로 확인한 현재 IP.
-            # docker-compose를 내렸다 올리면(down/up) 컨테이너가 재생성되면서 IP가 바뀔 수
-            # 있으니, 그럴 땐 같은 명령으로 다시 확인해서 이 값을 갱신할 것. (더 안정적인
-            # 방법은 DNS 별칭 "otel-collector"를 쓰는 건데, 그건 k3d pod -> coredns ->
-            # node resolv.conf -> docker 내장 DNS로 이어지는 경로가 실제로 동작하는지
-            # 확인이 더 필요해서 일단 IP로 먼저 검증하는 중.)
+            # 붙이고 나면 이 파드도 Docker 내장 DNS로 siem-net 위의 컨테이너 이름을 그대로
+            # resolve할 수 있다 - IP를 하드코딩해서 컨테이너 재생성마다 갱신할 필요가 없다.
+            #
+            # gRPC(4317)는 otel-collector 컨테이너가 직접 물고 있지 않고 Traefik의
+            # otlp-grpc 엔트리포인트로만 받는다 (h2c preface를 HTTP/1.1로 오인하는 문제를
+            # Traefik v3 + loadbalancer.server.scheme=h2c 조합으로 해결해 둔 경로 - IDS-COLLECTOR의
+            # servers/otel/docker-compose.yml, servers/proxy/traefik/traefik.yml 참고).
+            # 그래서 otel-collector가 아니라 반드시 traefik 컨테이너를 목적지로 잡아야 한다.
             - name: CENTRAL_SIEM_OTLP_ENDPOINT
-              value: "172.18.0.6:4317"
+              value: "traefik:4317"
           ports:
             - containerPort: 4317
               name: otlp-grpc

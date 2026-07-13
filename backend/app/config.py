@@ -18,11 +18,19 @@ class Settings(BaseSettings):
     rate_limit_window_seconds: int = 60
     rate_limit_max_requests: int = 30
 
-    # OTel Collector 접속 정보 (담당: 심다움) - 탐지된 AttackLog를 여기로 OTLP(HTTP) push.
+    # OTel Collector 접속 정보 (담당: 심다움) - 탐지된 WafAlert를 여기로 OTLP(HTTP) push.
     # otel-collector-deployment.yaml이 만드는 클러스터 내부 Service 이름을 그대로 씀.
     # 필드명을 OTel 표준 환경변수(OTEL_EXPORTER_OTLP_ENDPOINT)에 그대로 맞춰서
     # pydantic-settings가 별도 alias 없이 자동으로 매핑하게 함.
     otel_exporter_otlp_endpoint: str = "http://otel-collector:4318"
+
+    # otel-collector가 죽어있는 동안 export가 실패한 배치를 로컬에 남기는 fallback
+    # 파일 경로 (담당: 심다움) - BatchLogRecordProcessor는 export() 실패를 감지해도
+    # 재시도/알림 없이 그 배치를 버리는 게 기본 동작이라(실측 확인), 완전 유실을
+    # 막기 위한 최소한의 장치. 파드 재시작 전까지만 버텨주는 임시 방편이라
+    # (emptyDir 등 별도 볼륨을 안 붙이면 파드가 죽으면 이것도 같이 사라짐), 근본
+    # 해결은 아니고 "조용히 사라지진 않게" 하는 수준.
+    otel_export_fallback_path: str = "/tmp/waf-otel-export-fallback.jsonl"
 
     # Brute Force 탐지 설정 (담당: 이용욱 / 하지환)
     brute_force_max_failures: int = 5

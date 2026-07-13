@@ -2,7 +2,7 @@
 담당: 윤재영 (서버·DB 탐지) / 심다움 (클라이언트 탐지) — 탐지 로직 통합 지점
 
 app/middleware/decoder.py 에서 정규화(디코딩)까지 끝낸 문자열을 받아서
-signatures.py의 규칙과 매칭시키고, 걸리면 AttackLog를 만들어 반환한다.
+signatures.py의 규칙과 매칭시키고, 걸리면 WafAlert를 만들어 반환한다.
 
 이 파일은 "공통 탐지 프레임워크" 역할만 하고,
 실제 패턴은 signatures.py에 팀원별로 나눠서 채워 넣는 구조.
@@ -13,7 +13,7 @@ import re
 from typing import Optional
 
 from app.detection.signatures import SIGNATURES
-from app.models.schemas import AttackLog, AttackType, RiskLevel
+from app.models.schemas import AttackType, RiskLevel, WafAlert
 
 _BEARER_TOKEN_PATTERN = re.compile(r"Bearer\s+([A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]*)", re.IGNORECASE)
 
@@ -52,9 +52,9 @@ def inspect_request(
     body_text: str,
     headers_text: str,
     user_agent: Optional[str] = None,
-) -> Optional[AttackLog]:
+) -> Optional[WafAlert]:
     """
-    요청 하나를 검사해서 공격으로 판단되면 AttackLog를, 아니면 None을 반환.
+    요청 하나를 검사해서 공격으로 판단되면 WafAlert를, 아니면 None을 반환.
 
     PoC 때 겪은 버그(JWT 위조가 헤더에만 있어서 못 잡음)를 반영해서
     body와 헤더를 합친 문자열(inspection_text)을 통째로 검사한다.
@@ -62,7 +62,7 @@ def inspect_request(
     inspection_text = f"{body_text}\n{headers_text}"
 
     if _check_jwt_alg_none(headers_text):
-        return AttackLog(
+        return WafAlert(
             source_ip=source_ip,
             attack_type=AttackType.JWT_FORGERY,
             target_endpoint=target_endpoint,
@@ -81,7 +81,7 @@ def inspect_request(
             snippet_end = min(match.end() + 20, len(inspection_text))
             snippet = inspection_text[snippet_start:snippet_end]
 
-            return AttackLog(
+            return WafAlert(
                 source_ip=source_ip,
                 attack_type=AttackType(attack_type),
                 target_endpoint=target_endpoint,

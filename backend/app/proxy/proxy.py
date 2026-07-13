@@ -10,13 +10,19 @@
               1) decoder.py로 body/헤더를 정규화 (인코딩 우회 방지)
               2) engine.py의 inspect_request로 SQLi/XSS/JWT위조 등 탐지
               3) 공격으로 판정되면
-                   -> AttackLog를 OTel(OTLP)로 otel-collector에 전송 (mitre_technique_id 자동 채움)
-              4) 판정 결과와 무관하게 항상 settings.target_service_url(Juice Shop)로 그대로
-                 전달하고 받은 응답을 브라우저에 그대로 돌려줌 — WAF는 더 이상 차단하지 않고
-                 로그만 생성한다 (실제 차단/접근 제어는 WAS 책임).
+                   -> WafAlert를 OTel(OTLP)로 otel-collector에 전송 (mitre_technique_id 자동 채움)
+                   -> detection 모드(기본): 로그만 남기고 4)로 진행
+                   -> prevention 모드: 여기서 403 리턴, Juice Shop으로 전달하지 않음
+              4) 시그니처 미탐지, 또는 detection 모드일 땐 settings.target_service_url(Juice Shop)로
+                 그대로 전달하고 받은 응답을 브라우저에 그대로 돌려줌.
+
+    주의: 이 차단은 시그니처 탐지 경로(여기)에만 적용된다. GatewayMiddleware의 Bad Bot/
+    CORS위반/RateLimit/BruteForce 탐지는 이 모드와 무관하게 여전히 로그만 남기고 통과시킨다
+    (그쪽 차단은 별도 작업 — blacklist_store 도입 이후).
 """
 import httpx
 from fastapi import APIRouter, Request, Response
+from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.detection.engine import inspect_request
@@ -81,6 +87,15 @@ async def proxy_request(path: str, request: Request):
 
     if attack_log is not None:
         save_log(attack_log)
+
+        # prevention 모드일 때만 실제로 막는다 (attack_log.blocked는 생성 시점의
+        # settings.waf_mode == "prevention" 여부를 그대로 반영함 - schemas.py 참고).
+        # detection 모드(기본)에서는 이 분기를 타지 않고 그대로 4)로 진행한다.
+        if attack_log.blocked:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Request blocked by WAF"},
+            )
 
     # 쿼리 파라미터도 정규화 (HTTP Parameter Pollution 방어)
     raw_query_params: dict = {}
