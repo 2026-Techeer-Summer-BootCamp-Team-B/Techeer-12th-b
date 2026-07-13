@@ -67,6 +67,11 @@ class _ResilientLogExporter(LogExporter):
         self._fallback_path = fallback_path
 
     def export(self, batch: Sequence[LogData]):
+        # KNOWN BUG (실전 테스트로 재현 확인, 2026-07-13): collector가 완전히 unreachable할
+        # 때(ConnectionRefusedError 등) self._inner.export()가 FAILURE를 반환하는 대신
+        # 예외를 던진다. 그러면 아래 FAILURE 체크를 아예 못 타서 fallback 파일에 안 쌓이고
+        # 배치가 그냥 유실됨 - 정작 이 클래스가 막으려던 "collector 다운" 시나리오에서
+        # 안전망이 뚫림. try/except로 예외도 잡아서 _write_fallback 태우는 수정 필요(미착수).
         result = self._inner.export(batch)
         if result == LogExportResult.FAILURE:
             _logger_module.warning(
