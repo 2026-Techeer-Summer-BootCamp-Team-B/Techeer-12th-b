@@ -17,6 +17,7 @@ WAF는 아무것도 차단하지 않는다 — 실제 접근 제어(차단)는 W
 전송된다. Falco(런타임)/K8s Audit(제어판) 로그도 같은 Collector가 모아서 Central SIEM으로
 넘기므로, 이 앱은 대시보드/DB 없이 ① 관문(WAF) 계층의 로그 발생지 역할만 한다.
 """
+import asyncio
 import sys
 
 # Windows 콘솔의 기본 코드페이지(cp949 등)는 로그 곳곳에 쓰인 이모지(✅🚨❌ 등)를 인코딩하지 못해
@@ -40,9 +41,22 @@ app = FastAPI(
     version="0.2.0",
 )
 
+_otel_retry_task = None
+
+
+@app.on_event("startup")
+async def on_startup():
+    global _otel_retry_task
+    # otel-collector가 다운돼 있는 동안 실패해서 로컬 fallback 파일에 쌓인
+    # AttackLog를 주기적으로 자동 재전송한다 (app/otel/logger.py 참고) - 사람이
+    # fallback 파일을 보고 수동으로 재적재하지 않아도 되게 한다.
+    _otel_retry_task = asyncio.create_task(otel_logger.retry_fallback_loop())
+
 
 @app.on_event("shutdown")
-def on_shutdown():
+async def on_shutdown():
+    if _otel_retry_task:
+        _otel_retry_task.cancel()
     otel_logger.shutdown()
 
 

@@ -15,6 +15,7 @@ data:
         '{'
           '"time":"$time_iso8601",'
           '"remote_addr":"$remote_addr",'
+          '"http_x_forwarded_for":"$http_x_forwarded_for",'
           '"method":"$request_method",'
           '"path":"$uri",'
           '"query":"$args",'
