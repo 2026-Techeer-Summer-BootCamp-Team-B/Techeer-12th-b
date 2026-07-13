@@ -61,6 +61,14 @@ customRules:
     - macro: in_protected_ns
       condition: (k8s.ns.name in (protected_namespaces))
 
+    # kubectl exec 등 정상 운영 접근에서도 흔히 발화하는 stock 룰이라 기본 NOTICE보다
+    # 눈에 띄게 낮춘다 (팀 severity 매핑: WARNING -> severity 2/medium). 조건은 손대지
+    # 않고 priority만 오버라이드 — F4-5(화이트리스트 매크로 활용 노이즈 튜닝)는 별개 작업으로 남아있음.
+    - rule: Terminal shell in container
+      priority: WARNING
+      override:
+        priority: replace
+
   # F2-1. Web Server Spawned Shell (S1 stage2) — 웹서버(nginx/node)가 셸을 자식 프로세스로
   # 실행하는 것은 웹셸/RCE 성공 신호. kubectl exec로 붙인 셸은 부모가 containerd-shim이라
   # (F4-1에서 확인) webserver_binaries를 부모로 갖지 않으므로 이 룰과 자연히 구분됨 — 정상
@@ -88,5 +96,36 @@ customRules:
         and not user_expected_web_server_shell_conditions
       output: >
         Web server spawned a shell - RCE success signal (S1 stage2) | evt_type=%evt.type user=%user.name user_uid=%user.uid process=%proc.name proc_exepath=%proc.exepath parent=%proc.pname command=%proc.cmdline terminal=%proc.tty k8s_ns=%k8s.ns.name k8s_pod=%k8s.pod.name container_id=%container.id container_name=%container.name image=%container.image.repository
-      priority: CRITICAL
+      priority: ALERT
       tags: [mitre_execution, T1059.004, scenario:S1]
+
+  # F2-2. Sensitive Mount Read (S2) — 정상 앱(nginx/node)이 아닌 프로세스가 SA 토큰/secrets
+  # 마운트를 read하는 것은 RCE 이후 자격증명 탈취 시도 신호. F2-1(웹셸 실행)과 같은 셸/침투
+  # 프로세스가 이어서 자격증명을 훔치는 흐름이라 S1 다음 단계로 상관분석 가능. priority는 팀
+  # severity 매핑 회의 결과와 무관하게 ERROR(=팀 severity 3/high)로 확정. F2-1과 같은 이유로
+  # /var/run/secrets/ 하위 전체를 감시 대상에 포함(SA 토큰 외 다른 Secret 마운트 대비) — 이
+  # 프로젝트에 Juice Shop이 아직 배포 전이라 실제로 다른 Secret 마운트가 있는지는 미확인, 배포
+  # 후 없는 것으로 확인되면 두 번째 startswith 조건 제거 고려.
+  rules-f2-2-sensitive-mount-read.yaml: |-
+    - macro: user_expected_sensitive_mount_read_conditions
+      condition: (never_true)
+
+    - rule: Sensitive Mount Read
+      desc: >
+        A non-webserver process in a protected namespace read the pod's mounted service account
+        token or another file under /var/run/secrets/. Legitimate request handling never reads
+        these credentials directly, so this is a strong signal of credential theft following
+        RCE/webshell exploitation (S2). Correlate with Web Server Spawned Shell (S1) and WAS
+        access log (log.source=was) by k8s namespace/pod and timestamp.
+      condition: >
+        open_read
+        and container
+        and in_protected_ns
+        and (fd.name startswith /var/run/secrets/kubernetes.io/serviceaccount/
+             or fd.name startswith /var/run/secrets/)
+        and not proc.name in (webserver_binaries)
+        and not user_expected_sensitive_mount_read_conditions
+      output: >
+        Sensitive credential file read by unexpected process - credential theft signal (S2) | evt_type=%evt.type user=%user.name user_uid=%user.uid process=%proc.name proc_exepath=%proc.exepath parent=%proc.pname file=%fd.name k8s_ns=%k8s.ns.name k8s_pod=%k8s.pod.name container_id=%container.id container_name=%container.name image=%container.image.repository
+      priority: ERROR
+      tags: [mitre_credential_access, T1552.001, scenario:S2]
