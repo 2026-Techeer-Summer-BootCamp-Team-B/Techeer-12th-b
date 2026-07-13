@@ -8,6 +8,26 @@
 # http_output(백엔드 /api/alerts로 직접 POST)은 더 이상 쓰지 않는다. 이제 Falco는
 # json_output만 켜두고 stdout에 JSON을 남기면, otel-collector가 Falco 파드의 컨테이너 로그
 # 파일(/var/log/pods/...)을 tail해서 OTLP로 중앙 수집한다 (otel-collector-config.yaml 참고).
+# - 본 values.yaml에서 falcosidekick 관련 설정은 의도적으로 비활성화(enabled: false) 상태임.
+# - 파이썬 백엔드 서버가 로그를 직접 받지 않으므로, 백엔드에 수집용 엔드포인트를 추가하지 말 것.
+# - 로그 포맷 파싱 및 전달 관련 트러블슈팅은 OTel Collector 설정을 확인해야 함.
+
+# 3.로컬 개발 환경 검증 결과 및 제약사항 기록
+
+#   구동 환경: k3d (WSL2 + Docker Desktop 중첩 구조)
+#   엔진 설정: modern_ebpf (CO-RE 기반 프로브 정상 attach 확인)
+#   
+#     로그 경고 및 영향도 요약:
+# 1. libbpf/libpman (connect, creat, open, openat, openat2) TOCTOU 완화 프로그램 부착 실패
+#    - 원인: WSL2 커널이 해당 syscall의 진입점 tracepoint를 표준 리눅스와 다르게 노출하거나 누락함.
+#    - 영향: TOCTOU(Time-of-check-time-of-use) 완화용 보조 기능만 제한될 뿐, 메인 탐지 로직은 
+#            정상 작동함 (로그상 "Detection will continue to work" 확인 및 실테스트 검증 완료).
+# 2. libpman: disabled BPF iterators
+#    - 원인: 컨테이너화된 비-루트 PID 네임스페이스 환경으로 인한 제약.
+#    - 영향: 초기 프로세스 스캔만 비활성화되며 실시간 탐지에는 지장 없음.
+# 3.실서버 배포 시 참고:
+#   실제 운영 서버(Native Linux VM) 환경에서는 위 WSL2 커널 특유의 tracepoint 누락 경고가 
+#   발생하지 않을 가능성이 높음. 배포 후 로그 모니터링 시 해당 경고 유무 재확인 필요.
 
 driver:
   kind: modern_ebpf
@@ -16,3 +36,109 @@ tty: true
 
 falco:
   json_output: true
+
+# F1-3. 커스텀 룰들이 공통으로 참조할 매크로/리스트 정의.
+# 이 파일 자체에는 아직 `- rule:` 항목이 없다 — 실제 탐지 룰(F4-5 노이즈 튜닝 등)이
+# 여기 정의된 매크로/리스트를 나중에 가져다 쓰는 구조. Falco 기본 룰셋에도 비슷한
+# 범용 리스트(http_server_binaries, package_mgmt_binaries)가 있지만, 이 프로젝트
+# 스택(Juice Shop + nginx-was-logger)에 맞춰 별도로 정의한다.
+customRules:
+  rules-common.yaml: |-
+    # webserver_binaries: 이 스택에서 실제 요청을 "처리"하는 프로세스들. nginx는 정적 설정
+    # 리버스 프록시/로거라 셸을 실행할 이유가 거의 없지만(기본 룰 Run shell untrusted가
+    # NOTICE로 이미 커버함), 진짜 RCE 표면은 Juice Shop 앱 코드가 도는 node — 그래서 둘 다 포함.
+    - list: webserver_binaries
+      items: [nginx, node]
+
+    - list: package_managers
+      items: [apk, apt, apt-get, dpkg, npm, npx, pnpm, yarn, pip, pip3]
+
+    # 보호 대상 서비스(Juice Shop)가 떠 있는 네임스페이스. falco/kube-system 같은
+    # 인프라 네임스페이스는 제외 — 필요해지면 여기에 추가.
+    - list: protected_namespaces
+      items: [default]
+
+    - macro: in_protected_ns
+      condition: (k8s.ns.name in (protected_namespaces))
+
+    # kubectl exec 등 정상 운영 접근에서도 흔히 발화하는 stock 룰 - Falco 혼자서는 위험
+    # 여부를 판단 못 하고(정상 운영 접근과 구분 불가), 상관분석(S1/S5의 stage2)에서 앞뒤
+    # 맥락과 엮어야 의미가 생긴다. 그래서 priority는 오버라이드하지 않고 기본값(NOTICE)을
+    # 그대로 둔다 - team severity 매핑상 NOTICE/INFORMATIONAL/DEBUG가 전부 1(low)로 같이
+    # 묶여서, 굳이 손대도 결과가 안 바뀐다(검토 완료, 실수로 빠진 게 아님). priority가
+    # 뭐든 룰 이름 문자열만으로 매칭하는 상관분석 동작에는 영향 없음. F4-5(화이트리스트
+    # 매크로 활용 노이즈 튜닝)는 별개 작업으로 남아있음.
+
+    # F4-3. Contact K8S API Server From Container — condition은 기본 룰 그대로 두고(이미
+    # k8s_containers 매크로로 falco/kube-system 등 인프라 파드는 제외돼 있어 손댈 필요 없음)
+    # priority만 기본 NOTICE에서 한 단계 올린다. 이 룰이 보는 건 "컨테이너가 API 서버에 커넥션을
+    # 열었다"는 단일 syscall 이벤트뿐 — Falco 입장에서는 이게 탈취한 SA 토큰을 악용한 정찰인지,
+    # 그냥 정상 워크로드의 API 호출인지 구분할 근거가 없다. F2-2(토큰 read)와 시간/네임스페이스로
+    # 상관분석했을 때에야 "토큰 탈취 후 실제로 써봤다"는 확신이 서는 것이므로, 그 단계별 확신
+    # 격상은 상관분석 엔진의 몫이고 이 개별 룰은 딱 한 단계(WARNING)만 올려서 상관분석 대상
+    # 후보로 눈에 띄게 해두는 역할까지만 한다.
+    - rule: Contact K8S API Server From Container
+      priority: WARNING
+      override:
+        priority: replace
+
+  # F2-1. Web Server Spawned Shell (S1 stage2) — 웹서버(nginx/node)가 셸을 자식 프로세스로
+  # 실행하는 것은 웹셸/RCE 성공 신호. kubectl exec로 붙인 셸은 부모가 containerd-shim이라
+  # (F4-1에서 확인) webserver_binaries를 부모로 갖지 않으므로 이 룰과 자연히 구분됨 — 정상
+  # 운영 접근(kubectl exec)과 오탐 섞일 걱정 없음. 이 프로젝트의 첫 커스텀 탐지 룰이라 태그
+  # 컨벤션도 여기서 처음 정함: MITRE 기법 태그는 범용 T1059 대신 서브테크닉 T1059.004
+  # (Unix Shell)를 쓴다 — Falco 기본 룰셋의 셸 관련 룰(Run shell untrusted, Terminal shell in
+  # container)도 전부 T1059.004를 쓰길래 맞춤. 앞으로 셸 실행 계열 커스텀 룰을 추가할 때도
+  # T1059.004로 통일할 것.
+  rules-f2-1-web-server-spawned-shell.yaml: |-
+    - macro: user_expected_web_server_shell_conditions
+      condition: (never_true)
+
+    - rule: Web Server Spawned Shell
+      desc: >
+        A web-facing process (nginx or the Juice Shop node app) in a protected namespace spawned
+        a shell as a child process. Legitimate request handling never execs a shell, so this is a
+        strong signal that RCE/webshell exploitation succeeded. Correlate with WAS access log
+        (log.source=was) by k8s namespace/pod and timestamp to find the triggering HTTP request.
+      condition: >
+        spawned_process
+        and shell_procs
+        and proc.pname exists
+        and proc.pname in (webserver_binaries)
+        and in_protected_ns
+        and not user_expected_web_server_shell_conditions
+      output: >
+        Web server spawned a shell - RCE success signal (S1 stage2) | evt_type=%evt.type user=%user.name user_uid=%user.uid process=%proc.name proc_exepath=%proc.exepath parent=%proc.pname command=%proc.cmdline terminal=%proc.tty k8s_ns=%k8s.ns.name k8s_pod=%k8s.pod.name container_id=%container.id container_name=%container.name image=%container.image.repository
+      priority: ALERT
+      tags: [mitre_execution, T1059.004, scenario:S1]
+
+  # F2-2. Sensitive Mount Read (S2) — 정상 앱(nginx/node)이 아닌 프로세스가 SA 토큰/secrets
+  # 마운트를 read하는 것은 RCE 이후 자격증명 탈취 시도 신호. F2-1(웹셸 실행)과 같은 셸/침투
+  # 프로세스가 이어서 자격증명을 훔치는 흐름이라 S1 다음 단계로 상관분석 가능. priority는 팀
+  # severity 매핑 회의 결과와 무관하게 ERROR(=팀 severity 3/high)로 확정. F2-1과 같은 이유로
+  # /var/run/secrets/ 하위 전체를 감시 대상에 포함(SA 토큰 외 다른 Secret 마운트 대비) — 이
+  # 프로젝트에 Juice Shop이 아직 배포 전이라 실제로 다른 Secret 마운트가 있는지는 미확인, 배포
+  # 후 없는 것으로 확인되면 두 번째 startswith 조건 제거 고려.
+  rules-f2-2-sensitive-mount-read.yaml: |-
+    - macro: user_expected_sensitive_mount_read_conditions
+      condition: (never_true)
+
+    - rule: Sensitive Mount Read
+      desc: >
+        A non-webserver process in a protected namespace read the pod's mounted service account
+        token or another file under /var/run/secrets/. Legitimate request handling never reads
+        these credentials directly, so this is a strong signal of credential theft following
+        RCE/webshell exploitation (S2). Correlate with Web Server Spawned Shell (S1) and WAS
+        access log (log.source=was) by k8s namespace/pod and timestamp.
+      condition: >
+        open_read
+        and container
+        and in_protected_ns
+        and (fd.name startswith /var/run/secrets/kubernetes.io/serviceaccount/
+             or fd.name startswith /var/run/secrets/)
+        and not proc.name in (webserver_binaries)
+        and not user_expected_sensitive_mount_read_conditions
+      output: >
+        Sensitive credential file read by unexpected process - credential theft signal (S2) | evt_type=%evt.type user=%user.name user_uid=%user.uid process=%proc.name proc_exepath=%proc.exepath parent=%proc.pname file=%fd.name k8s_ns=%k8s.ns.name k8s_pod=%k8s.pod.name container_id=%container.id container_name=%container.name image=%container.image.repository
+      priority: ERROR
+      tags: [mitre_credential_access, T1552.001, scenario:S2]
