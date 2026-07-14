@@ -32,6 +32,15 @@ data:
       server {
         listen 8080;
 
+        # Netdata(go.d.plugin) 등 로컬 모니터링 에이전트가 주기적으로 /metrics를
+        # 스크래핑하면서 이게 그대로 access log에 찍혀 SIEM에 "WAS 이벤트"로
+        # 들어가던 문제 - Juice Shop엔 애초에 이 경로가 없어 프록시할 필요도 없으니
+        # access_log를 끄고 바로 204로 끊는다 (실제 공격 트래픽과 무관한 노이즈).
+        location = /metrics {
+          access_log off;
+          return 204;
+        }
+
         location / {
           # 같은 Pod 안의 juice-shop 컨테이너로 그대로 전달 (localhost로 접근 가능)
           proxy_pass http://127.0.0.1:3000;
