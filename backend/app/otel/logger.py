@@ -121,11 +121,18 @@ _otlp_exporter = OTLPLogExporter(
 _logger_provider.add_log_record_processor(
     BatchLogRecordProcessor(
         _ResilientLogExporter(_otlp_exporter, fallback_path=settings.otel_export_fallback_path),
-        # 기본 max_queue_size(2048)/schedule_delay(5s)로도 대부분은 충분하지만,
-        # 짧은 outage 동안 유실 창을 조금 더 넉넉히 벌려둔다 - 그래도 무한정
-        # 버텨주는 건 아니라서(큐가 꽉 차면 deque가 오래된 항목을 자동으로
-        # 조용히 버림, exporter FAILURE 여부와 별개 문제) 위 fallback 파일이
-        # 실질적인 안전망이다.
+        # [실측 확인, 2026-07-14] schedule_delay_millis 기본값(5000ms)을 그대로 뒀더니
+        # WAF 탐지 시점부터 Kafka에 실제로 나가기까지 이 배치 큐 하나가 최대 5초를
+        # 잡아먹는 게 파이프라인 전체 지연의 90% 이상을 차지하는 걸 otel-collector
+        # 로그로 직접 확인함(이벤트 여러 건이 5초 간격으로 뭉쳐서 나가는 패턴).
+        # 나머지 구간(collector batch/Kafka/normalizer/correlation-engine/Postgres)은
+        # 전부 합쳐도 0.3초 안팎이라, 중앙 otel-collector의 batch.timeout과 동일하게
+        # 500ms로 낮춰서 이 단일 병목을 없앤다.
+        schedule_delay_millis=500,
+        # 기본 max_queue_size(2048)로도 대부분은 충분하지만, 짧은 outage 동안 유실
+        # 창을 조금 더 넉넉히 벌려둔다 - 그래도 무한정 버텨주는 건 아니라서(큐가
+        # 꽉 차면 deque가 오래된 항목을 자동으로 조용히 버림, exporter FAILURE
+        # 여부와 별개 문제) 위 fallback 파일이 실질적인 안전망이다.
         max_queue_size=8192,
     )
 )
