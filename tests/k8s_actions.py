@@ -256,7 +256,9 @@ def delete_clusterrole(name: str) -> None:
 
 def create_clusterrolebinding(name: str, sa_namespace: str, sa_name: str, role_name: str) -> None:
     _, rbac = _clients()
-    subj = client.V1Subject(kind="ServiceAccount", name=sa_name, namespace=sa_namespace)
+    # kubernetes-client>=27에서 V1Subject가 RbacV1Subject로 이름이 바뀜(실측: 설치된
+    # 36.0.3엔 V1Subject 자체가 없음) - 파라미터(kind/name/namespace)는 동일.
+    subj = client.RbacV1Subject(kind="ServiceAccount", name=sa_name, namespace=sa_namespace)
     role_ref = client.V1RoleRef(api_group="rbac.authorization.k8s.io", kind="ClusterRole", name=role_name)
     rbac.create_cluster_role_binding(
         client.V1ClusterRoleBinding(metadata=client.V1ObjectMeta(name=name), subjects=[subj], role_ref=role_ref)
