@@ -177,6 +177,7 @@ def emit_waf_alert(log: WafAlert) -> None:
                 "target_name": log.target_name or "",
                 "http_method": log.http_method,
                 "matched_rule_id": log.matched_rule_id or "",
+                "matched_rule_name": log.matched_rule_name or "",
                 "mitre_technique_id": log.mitre_technique_id or "",
                 "blocked": log.blocked,
             },

@@ -14,6 +14,16 @@ class Settings(BaseSettings):
     # 이제 백엔드 자체가 k3d 클러스터 안에 Pod로 떠서, k8s DNS로 juice-shop 서비스에 접근한다.
     target_service_url: str = "http://juice-shop:3000"
 
+    # 이 WAF backend 인스턴스가 보호하는 타깃의 이름 - IDS-COLLECTOR의 `targets`
+    # 테이블(POST /targets로 등록하는 name)과 같은 값으로 맞춰야 한다. 여러 타깃을
+    # 보호하려면 WAF backend+WAS 사이드카 한 세트를 타깃마다 통째로 복제 배포하고
+    # (juice-shop-with-nginx-sidecar.yaml/backend-deployment.yaml 참고) 이 값과
+    # TARGET_SERVICE_URL만 그 타깃에 맞게 바꾼다 - 하나의 프로세스가 여러 타깃을
+    # 동시에 처리하는 라우팅은 하지 않는다(Traefik이 원래 담당하는 역할이라
+    # 여기서 다시 만들 필요 없음). WafAlert.target_name(schemas.py)에 실어서
+    # IDS-COLLECTOR까지 전파된다(app/proxy/proxy.py 참고).
+    target_name: str = "juice-shop"
+
     # Rate Limiting 설정 (담당: 이용욱)
     rate_limit_window_seconds: int = 60
     rate_limit_max_requests: int = 30

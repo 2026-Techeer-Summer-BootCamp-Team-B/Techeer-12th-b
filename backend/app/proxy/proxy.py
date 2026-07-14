@@ -98,6 +98,13 @@ async def proxy_request(path: str, request: Request):
         user_agent=request.headers.get("user-agent"),
     )
 
+    # target_pod_name/target_namespace(어느 pod가 처리했는지)와 달리 target_name(이
+    # WAF backend 인스턴스가 어느 타깃을 보호하는지)은 배포 시점에 이미 정해진
+    # 정적 설정값이라 요청을 넘기기도 전에 바로 채울 수 있다 - prevention 모드로
+    # 차단되는 경우에도 채워지도록 여기서 처리(config.py의 target_name 참고).
+    if attack_log is not None:
+        attack_log.target_name = settings.target_name
+
     # prevention 모드로 차단되는 경우는 Juice Shop까지 전달하지 않으므로, 어느 pod가
     # "처리했을지"를 알 방법이 없다(target_pod_name/target_namespace는 None으로 남음) -
     # 여기서 바로 저장하고 반환한다. detection 모드(기본)에서는 이 분기를 타지 않고

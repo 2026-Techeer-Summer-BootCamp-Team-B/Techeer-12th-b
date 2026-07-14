@@ -32,7 +32,8 @@ data:
         '"referer":"$http_referer",'
         '"x_forwarded_for":"$http_x_forwarded_for",'
         '"orchestrator_namespace":"${POD_NAMESPACE}",'
-        '"orchestrator_pod":"${POD_NAME}"'
+        '"orchestrator_pod":"${POD_NAME}",'
+        '"target_name":"${TARGET_NAME}"'
       '}';
 
     access_log /dev/stdout was_json;

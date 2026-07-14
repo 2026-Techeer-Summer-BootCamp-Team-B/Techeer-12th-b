@@ -83,6 +83,10 @@ class WafAlert(BaseModel):
     payload_snippet: str = Field(max_length=200)
     user_agent: Optional[str] = None
     matched_rule_id: Optional[str] = None
+    # matched_rule_id는 조회용 슬러그(예: sqli_union_select), 이건 사람이 읽는 표시용
+    # 이름(예: "SQL Injection: UNION SELECT") - 예전엔 이 필드가 없어서 정규화 단계가
+    # rule.name에 rule.id를 그대로 재사용해야 했다(2026-07-14 분리).
+    matched_rule_name: Optional[str] = None
     # WAF는 더 이상 요청을 차단하지 않는다 (실제 차단은 WAS 책임) — mode가 "detection"이면
     # 항상 False. mode가 "prevention"이면 시연용으로 True가 채워지지만, 이 값 자체가
     # 실제 요청을 막지는 않는다 (분석 서버의 waf.blocked 필드용 표시값).

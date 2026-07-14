@@ -31,6 +31,11 @@ spec:
           env:
             - name: TARGET_SERVICE_URL
               value: "http://juice-shop:3000"
+            # juice-shop-with-nginx-sidecar.yaml의 TARGET_NAME과 반드시 같은 값으로
+            # 맞출 것 - IDS-COLLECTOR가 WAF/WAS 이벤트를 같은 타깃으로 묶는 기준이다
+            # (app/config.py 참고).
+            - name: TARGET_NAME
+              value: "juice-shop"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://otel-collector:4318"
             # kubectl port-forward는 kubelet이 pod의 네트워크 네임스페이스 안에서

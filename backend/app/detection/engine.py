@@ -70,10 +70,11 @@ def inspect_request(
             payload_snippet=headers_text[:200],
             user_agent=user_agent,
             matched_rule_id="jwt_alg_none",
+            matched_rule_name="JWT 위조: alg:none 헤더",
             risk_level=RiskLevel.CRITICAL,
         )
 
-    for attack_type, rule_name, pattern, severity in SIGNATURES:
+    for attack_type, rule_id, rule_name, pattern, severity in SIGNATURES:
         match = pattern.search(inspection_text)
         if match:
             # 매칭된 부분 앞뒤로 살짝 잘라서 로그에 남김 (전체 페이로드 저장 금지)
@@ -88,7 +89,8 @@ def inspect_request(
                 http_method=http_method,
                 payload_snippet=snippet,
                 user_agent=user_agent,
-                matched_rule_id=rule_name,
+                matched_rule_id=rule_id,
+                matched_rule_name=rule_name,
                 risk_level=RiskLevel(severity),
             )
 
