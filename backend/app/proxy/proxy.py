@@ -51,11 +51,15 @@ _INSPECTED_HEADER_NAMES = {
 
 # 백엔드(Juice Shop)로 그대로 전달하면 안 되는 hop-by-hop 헤더
 # (RFC 7230 기준, 프록시가 자체적으로 관리해야 하는 헤더들)
+# + nginx-was-logger가 실어준 X-Served-By-* 헤더 - WafAlert에 옮겨 담는 내부용이라
+# 브라우저 응답에 그대로 흘려보내 내부 pod 이름을 노출시키면 안 된다.
 _EXCLUDED_RESPONSE_HEADERS = {
     "content-encoding",
     "content-length",
     "transfer-encoding",
     "connection",
+    "x-served-by-pod",
+    "x-served-by-namespace",
 }
 
 
@@ -94,17 +98,17 @@ async def proxy_request(path: str, request: Request):
         user_agent=request.headers.get("user-agent"),
     )
 
-    if attack_log is not None:
+    # prevention 모드로 차단되는 경우는 Juice Shop까지 전달하지 않으므로, 어느 pod가
+    # "처리했을지"를 알 방법이 없다(target_pod_name/target_namespace는 None으로 남음) -
+    # 여기서 바로 저장하고 반환한다. detection 모드(기본)에서는 이 분기를 타지 않고
+    # 그대로 진행해서, 아래에서 실제로 요청을 넘긴 뒤 응답 헤더로 처리 pod를 채우고
+    # 나서 저장한다(save_log 호출 위치 참고).
+    if attack_log is not None and attack_log.blocked:
         save_log(attack_log)
-
-        # prevention 모드일 때만 실제로 막는다 (attack_log.blocked는 생성 시점의
-        # settings.waf_mode == "prevention" 여부를 그대로 반영함 - schemas.py 참고).
-        # detection 모드(기본)에서는 이 분기를 타지 않고 그대로 4)로 진행한다.
-        if attack_log.blocked:
-            return JSONResponse(
-                status_code=403,
-                content={"detail": "Request blocked by WAF"},
-            )
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Request blocked by WAF"},
+        )
 
     # 쿼리 파라미터도 정규화 (HTTP Parameter Pollution 방어)
     raw_query_params: dict = {}
@@ -129,6 +133,13 @@ async def proxy_request(path: str, request: Request):
             follow_redirects=False,
             timeout=30.0,
         )
+
+    if attack_log is not None:
+        # nginx-was-logger 사이드카가 실어준 헤더(juice-shop-nginx-configmap.yaml 참고) -
+        # "이 요청을 실제로 처리한 pod"를 매 요청마다 정확히 가리킨다(정적 하드코딩 아님).
+        attack_log.target_pod_name = upstream_response.headers.get("x-served-by-pod")
+        attack_log.target_namespace = upstream_response.headers.get("x-served-by-namespace")
+        save_log(attack_log)
 
     response_headers = {
         k: v

@@ -161,6 +161,7 @@ def emit_waf_alert(log: WafAlert) -> None:
             trace_flags=TraceFlags(TraceFlags.DEFAULT),
             severity_number=severity_number,
             severity_text=severity_text,
+            resource=_resource,
             body=log.model_dump_json(),
             attributes={
                 "attack_type": log.attack_type.value,
@@ -214,6 +215,7 @@ def _retry_fallback_once() -> None:
                 span_id=0,
                 trace_flags=TraceFlags(TraceFlags.DEFAULT),
                 severity_text=entry.get("severity_text"),
+                resource=_resource,
                 body=entry["body"],
             )
         except (json.JSONDecodeError, KeyError):

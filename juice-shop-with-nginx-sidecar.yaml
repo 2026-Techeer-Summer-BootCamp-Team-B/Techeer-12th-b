@@ -28,10 +28,25 @@ spec:
           image: nginx:1.27-alpine
           ports:
             - containerPort: 8080
+          env:
+            # nginx-conf 템플릿의 ${POD_NAME}/${POD_NAMESPACE}를 시작 시 실제 값으로
+            # 치환하는 데 쓴다(Downward API) - 재배포로 pod 이름이 바뀌어도 이 값은
+            # 항상 그 pod 자신의 실제 이름을 가리킨다.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           volumeMounts:
+            # /etc/nginx/nginx.conf(기본 이미지 제공, 건드리지 않음)가 여기 conf.d를
+            # include하고, 공식 이미지의 entrypoint가 시작 시 이 템플릿을 envsubst로
+            # 렌더링해서 conf.d에 떨궈준다 - juice-shop-nginx-configmap.yaml 참고.
             - name: nginx-conf
-              mountPath: /etc/nginx/nginx.conf
-              subPath: nginx.conf
+              mountPath: /etc/nginx/templates/default.conf.template
+              subPath: default.conf.template
       volumes:
         - name: nginx-conf
           configMap:

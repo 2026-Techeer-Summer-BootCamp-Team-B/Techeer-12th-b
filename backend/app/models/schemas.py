@@ -88,6 +88,13 @@ class WafAlert(BaseModel):
     # 실제 요청을 막지는 않는다 (분석 서버의 waf.blocked 필드용 표시값).
     blocked: bool = Field(default_factory=lambda: settings.waf_mode == "prevention")
     target_name: Optional[str] = None
+    # Juice Shop의 nginx-was-logger 사이드카가 응답에 실어주는 X-Served-By-Pod/
+    # X-Served-By-Namespace 헤더를 그대로 옮겨 담은 값(app/proxy/proxy.py 참고) -
+    # 정적으로 하드코딩하지 않고 "이 요청을 실제로 처리한 pod"를 매번 정확히 가리킨다.
+    # prevention 모드로 차단된 요청은 Juice Shop까지 안 가서 응답 자체가 없으므로
+    # None으로 남는다.
+    target_namespace: Optional[str] = None
+    target_pod_name: Optional[str] = None
     mitre_technique_id: Optional[str] = None
     risk_level: RiskLevel = RiskLevel.LOW
     # 분석 서버의 waf.mode 필드로 그대로 매핑됨. 기본은 탐지 전용("detection")이고,
