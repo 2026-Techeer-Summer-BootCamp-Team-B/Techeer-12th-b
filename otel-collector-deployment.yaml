@@ -71,6 +71,12 @@ spec:
             - name: k8s-audit-logs
               mountPath: /var/log/kubernetes/audit
               readOnly: true
+            # 크로스-서버 mTLS용 이 사이트(site-edge01) 클라 인증서 - otel-collector-mtls-client
+            # Secret은 매니페스트가 아니라 kubectl create secret으로 수동 생성해뒀다
+            # (인증서/개인키를 git에 커밋하지 않기 위해 - Techeer-12th-b/.gitignore의 certs/ 참고).
+            - name: mtls-client-certs
+              mountPath: /etc/otel/certs
+              readOnly: true
       volumes:
         - name: config
           configMap:
@@ -83,6 +89,9 @@ spec:
           hostPath:
             path: /var/log/kubernetes/audit
             type: DirectoryOrCreate
+        - name: mtls-client-certs
+          secret:
+            secretName: otel-collector-mtls-client
 ---
 apiVersion: v1
 kind: Service

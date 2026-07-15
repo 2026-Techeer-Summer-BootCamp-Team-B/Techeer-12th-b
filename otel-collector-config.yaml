@@ -81,13 +81,19 @@ data:
       # 각 노드의 otel-collector(DaemonSet)가 로컬에서 모은 로그를 gRPC로 쏘고,
       # 중앙의 Otel Gateway가 이를 받아낸다. HTTP보다 빠르고 효율적이라 gRPC를 쓴다.
       # 목적지는 배포 매니페스트의 CENTRAL_SIEM_OTLP_ENDPOINT로 채운다.
-      # (아직 미구축 상태라 연결 실패는 예상된 상황 - 익스포터가 재시도만 하고 Collector는 안 죽는다)
+      #
+      # 크로스-서버 mTLS - Traefik이 TCP 패스스루(TLS 안 까고 그대로 전달)로 물러나고
+      # 중앙 otel-collector가 mTLS를 직접 종단한다(IDS-COLLECTOR의 servers/otel/ 참고,
+      # 2026-07-15 Traefik의 passTLSClientCert가 h2c 백엔드에서 헤더를 안 넘기는 걸
+      # 확인해서 이 구조로 옮김). 이 사이트(site-edge01) 전용 클라 인증서로 접속해야
+      # 하고, otel-collector-mtls-client Secret(otel-collector-deployment.yaml 참고)에서
+      # 마운트된 파일을 쓴다. 인증서는 7일 유효 - 갱신은 scripts/renew-edge-tls.sh 몫.
       otlp:
         endpoint: ${env:CENTRAL_SIEM_OTLP_ENDPOINT}
         tls:
-          # Central SIEM이 아직 없어 실제 인증서가 없는 placeholder 단계라 평문 gRPC로 연결.
-          # 실제 Central SIEM 주소가 정해지고 TLS를 쓰게 되면 이 옵션을 지워야 한다.
-          insecure: true
+          cert_file: /etc/otel/certs/client.crt
+          key_file: /etc/otel/certs/client.key
+          ca_file: /etc/otel/certs/ca.crt
 
     service:
       pipelines:
