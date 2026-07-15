@@ -26,7 +26,148 @@ rules:
       - "system:kube-scheduler"
       - "system:kube-controller-manager"
       - "system:kube-proxy"
+      # k3s/k3d 전용 합성 신원 (2026-07-15 실측 추가): 이 3개는 표준 k8s
+      # 문서의 예시 정책엔 없어서 처음부터 빠져 있었다 - system:apiserver는
+      # API 서버의 애그리게이션/디스커버리용 내부 호출 신원, k3s-controller·
+      # k3s-supervisor는 k3s가 kube-controller-manager/scheduler를 단일
+      # 바이너리로 합치면서 쓰는 내부 신원, k3s-cloud-controller-manager는
+      # k3d가 내장으로 띄우는 cloud-controller-manager다.
+      - "system:apiserver"
+      - "system:k3s-controller"
+      - "system:k3s-supervisor"
+      - "k3s-cloud-controller-manager"
     verbs: ["get", "list", "watch"]
+
+  # kube-system 내장 컨트롤러(신뢰됨)의 조회성 호출 노이즈 제거 (2026-07-15
+  # 실측 추가): 5000건 샘플에서 실제로 이 트래픽을 낸 신원은 아래 12개뿐이었다.
+  # "system:serviceaccounts:kube-system" 그룹 전체를 걸지 않고 개별 신원만
+  # 나열하는 이유 - 그 그룹으로 걸면 공격자가 kube-system에 새 SA/파드를 심었을
+  # 때 그 SA의 조회(정찰) 트래픽까지 자동으로 묻힌다. 새로 생기는 kube-system
+  # SA는 목록에 없어 계속 기록되므로 이상 탐지 관점에서 더 안전하다.
+  - level: None
+    users:
+      - "system:serviceaccount:kube-system:traefik"
+      - "system:serviceaccount:kube-system:metrics-server"
+      - "system:serviceaccount:kube-system:generic-garbage-collector"
+      - "system:serviceaccount:kube-system:resourcequota-controller"
+      - "system:serviceaccount:kube-system:coredns"
+      - "system:serviceaccount:kube-system:endpointslice-controller"
+      - "system:serviceaccount:kube-system:endpoint-controller"
+      - "system:serviceaccount:kube-system:node-controller"
+      - "system:serviceaccount:kube-system:daemon-set-controller"
+      - "system:serviceaccount:kube-system:replicaset-controller"
+      - "system:serviceaccount:kube-system:deployment-controller"
+      - "system:serviceaccount:kube-system:local-path-provisioner-service-account"
+    verbs: ["get", "list", "watch"]
+
+  # 노드 자체 조회 노이즈 제거 (2026-07-15 실측 추가): get/list/watch는 읽기라
+  # 위험이 낮아 nodes 리소스 전체에 적용한다.
+  - level: None
+    userGroups:
+      - "system:nodes"
+    resources:
+      - group: ""
+        resources:
+          - "nodes"
+    verbs: ["get", "list", "watch"]
+
+  # 노드 하트비트(nodes/status patch) 노이즈 제거 (2026-07-15 실측 추가):
+  # kubelet의 patch/update는 실측 결과 전부 subresource=status(10초 주기
+  # 상태 보고)였다. 서브리소스를 status로 좁혀서, 같은 신원이 taint/label 등
+  # nodes 본문(스펙)을 건드리는 patch/update는 계속 기록되게 한다 - 침해된
+  # kubelet이 자기 노드의 스케줄링 제약을 스스로 풀어버리는 시나리오 대비.
+  - level: None
+    userGroups:
+      - "system:nodes"
+    resources:
+      - group: ""
+        resources:
+          - "nodes/status"
+    verbs: ["patch", "update"]
+
+  # coordination.k8s.io Lease heartbeat 노이즈 제거 (2026-07-15 실측 추가):
+  # 10초 주기 heartbeat를 update하는 것 - 5000건 샘플 중 leases update가
+  # 1127건(22.5%)으로 단일 최대 노이즈원이었다. namespaces를 kube-node-lease로
+  # 좁혀서 리더일렉션용 Lease(kube-system 등) 조작은 계속 잡히게 한다.
+
+  - level: None
+    userGroups:
+      - "system:nodes"
+    namespaces:
+      - "kube-node-lease"
+    resources:
+      - group: "coordination.k8s.io"
+        resources:
+          - "leases"
+
+  # 컨트롤 플레인 컴포넌트의 리더일렉션/identity Lease 하트비트 노이즈 제거
+  # (2026-07-15 실측 추가): system:apiserver가 kube-system 네임스페이스에서
+  # 갱신하는 APIServerIdentity lease가 292건 남아 있었다 - 위 node-lease
+  # 규칙은 namespace를 kube-node-lease로 좁혀놨기 때문에 이건 못 잡는다.
+  # userGroups가 아니라 개별 신원이라 users로 별도 규칙을 둔다.
+  - level: None
+    users:
+      - "system:apiserver"
+      - "system:k3s-controller"
+      - "system:k3s-supervisor"
+      - "k3s-cloud-controller-manager"
+    resources:
+      - group: "coordination.k8s.io"
+        resources:
+          - "leases"
+
+  # k8s 표준 Event 오브젝트 노이즈 제거 (2026-07-15 실측 추가): 감사 로그의
+  # audit Event가 아니라 `kubectl get events`로 보이는 상태 알림용 Event
+  # 리소스다. kubelet/controller들이 정상 동작 중에도 계속 create/patch하며
+  # (샘플 중 408건, 8.2%) 리소스 자체에 보안적 의미가 없어 공식 예시 audit
+  # 정책도 관례적으로 제외한다. 구버전 core group과 신버전 events.k8s.io
+  # group 둘 다 쓰이므로 둘 다 등록한다. verbs를 create/update/patch로만
+  # 좁혀서 delete/deletecollection은 catch-all Metadata에 걸리게 둔다 -
+  # 공격자가 흔적 인멸용으로 Event를 지우는 경우까지 놓치지 않기 위함.
+  - level: None
+    resources:
+      - group: ""
+        resources:
+          - "events"
+      - group: "events.k8s.io"
+        resources:
+          - "events"
+    verbs: ["create", "update", "patch"]
+
+  # authz/authn 자체 점검 노이즈 제거 (2026-07-15 실측 추가): 5000건 샘플에서
+  # 이 리소스를 호출한 신원은 system:k3s-controller/system:k3s-supervisor/
+  # system:nodes/metrics-server 4종뿐이었다. 리소스 기준으로 전체를 걸지 않고
+  # 신원으로 좁히는 이유 - subjectaccessreviews/tokenreviews는 `kubectl auth
+  # can-i` 류의 권한 정찰(MITRE T1069)에 쓰이는 리소스라, 낯선 신원(침해된
+  # 파드의 기본 SA, 외부 신원 등)이 이걸 호출하면 그 자체가 이상 신호다 -
+  # 전체를 None으로 걸면 그 정찰 행위 자체가 안 보이게 된다.
+  - level: None
+    users:
+      - "system:k3s-controller"
+      - "system:k3s-supervisor"
+      - "system:serviceaccount:kube-system:metrics-server"
+    resources:
+      - group: "authorization.k8s.io"
+        resources:
+          - "subjectaccessreviews"
+          - "selfsubjectaccessreviews"
+          - "selfsubjectrulesreviews"
+      - group: "authentication.k8s.io"
+        resources:
+          - "tokenreviews"
+
+  - level: None
+    userGroups:
+      - "system:nodes"
+    resources:
+      - group: "authorization.k8s.io"
+        resources:
+          - "subjectaccessreviews"
+          - "selfsubjectaccessreviews"
+          - "selfsubjectrulesreviews"
+      - group: "authentication.k8s.io"
+        resources:
+          - "tokenreviews"
 
   - level: None
     nonResourceURLs:

@@ -25,6 +25,27 @@ falco:
 # 명시적으로 true로 재정의해서 켠다 - 이 프로젝트는 단일 데모 클러스터라 실제
 # 마이너 풀 도메인/포트로 나가는 트래픽이 있을 리 없어서 오탐 리스크가 낮다.
 customRules:
+  # severity.yaml의 falco.priority 매핑(Notice->1)에서 묻히는 시나리오 재료 룰의
+  # priority를 재정의한다 (2026-07-15). "Terminal shell in container"는
+  # correlation-engine의 S1(workload.yaml stage2)/S5(network.yaml stage2) 재료로
+  # "WAF CRITICAL 차단 이후 실제 컨테이너 침투 확인"급 신호인데, falcosecurity/rules
+  # 코어 falco_rules.yaml 원본은 priority: NOTICE라 개별 이벤트 severity가 1로 묻힌다
+  # (WebFetch로 원본 재확인, 2026-07-15). condition/output은 원본 그대로 두고
+  # priority만 WARNING(severity 2)으로 올린다 - 이 이벤트 단독으로는 아직 "의심" 수준
+  # 취급(대량 kubectl exec 디버깅 등 오탐 가능성이 있어 CRITICAL까지는 안 감)이고,
+  # 실제 "확실한 침투"급 판정은 S5 상관분석(사전 WAF CRITICAL 차단 + 이 룰 매칭 시
+  # incident severity 4)이 담당한다 - 여기서 severity를 4까지 올리면 상관분석 계층의
+  # 역할과 중복/충돌한다.
+  #
+  # "Contact K8S API Server From Container"(같은 두 시나리오의 stage2 후보)는 일부러
+  # 안 건드린다 - 전체 Falco 이벤트의 절반 이상을 차지하는 정상 컨트롤러 트래픽
+  # 노이즈로 이미 확인됨(dashboard InfrastructureView.jsx의 exclusion rule EX-01
+  # 참고, 원본도 NOTICE로 동일 확인함) - priority를 올리면 정상 트래픽에 경보가
+  # 남발된다.
+  rules-severity-overrides.yaml: |-
+    - rule: Terminal shell in container
+      priority: WARNING
+
   rules-cryptomining.yaml: |-
     - list: miner_ports
       items: [

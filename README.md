@@ -268,12 +268,14 @@ curl "http://localhost:8000/proxy/rest/products/search?q=1%20UNION%20SELECT%20us
 ```
 
 ### 6) 더미 공격 생성기 실행 (로컬, VS Code PowerShell)
-`tests/dummy_generator.py`는 IDS-COLLECTOR의 상관분석 시나리오(S1~S18,
+`tests/dummy_generator.py`는 IDS-COLLECTOR의 상관분석 시나리오(S1~S25,
 `servers/correlation-engine/app/scenarios/*.yaml`)를 실제로 발화시키는 실제 K8s API
 호출(`tests/k8s_actions.py`, `tests/scenarios.py`) + 실제 WAF 공격 요청(`tests/waf_actions.py`,
-`svc/backend`의 `/proxy/...` 경유)을 수행한다 — 가짜 로그를 주입하는 게 아니라 진짜
-kube-apiserver 감사 로그/Falco 탐지/WAF 탐지 로그가 그대로 나가게 만드는 방식이라 K8s API
-접근(kubeconfig)과 WAF backend port-forward(5단계)가 모두 필요하다.
+`svc/backend`의 `/proxy/...` 경유) + S19 전용 WAS 직결 요청(`tests/was_actions.py`,
+WAF를 거치지 않고 `svc/juice-shop`에 바로 감)을 수행한다 — 가짜 로그를 주입하는 게
+아니라 진짜 kube-apiserver 감사 로그/Falco 탐지/WAF 탐지 로그/WAS 접근 로그가 그대로
+나가게 만드는 방식이라 K8s API 접근(kubeconfig), WAF backend port-forward(5단계),
+Juice Shop port-forward(4단계, S19 전용)가 모두 필요하다.
 
 ```bash
 cd tests
@@ -281,8 +283,12 @@ pip install -r requirements.txt
 
 # CLI로 바로 실행 (예: S4 시나리오 2회, 정상 트래픽 없이)
 $env:WAF_URL="http://localhost:8000"; python dummy_generator.py --scenario S4 --count 2 --no-normal
+# S19(로그인 브루트포스)는 WAF_URL이 아니라 WAS_URL(Juice Shop 직결, 4단계 port-forward)을 본다
+$env:WAS_URL="http://localhost:3000"; python dummy_generator.py --scenario S19 --count 1
 # 랜덤 시나리오 3회 (정상 트래픽 섞어서, 기본값)
 python dummy_generator.py --scenario random --count 3
+# 공격 없이 WAF+K8s 정상 트래픽만 5쌍 (베이스라인/오탐 확인용)
+python dummy_generator.py --scenario normal --count 5
 ```
 
 **버튼으로 실행하고 싶으면** 같은 디렉터리의 미니 웹 UI를 띄운다:
