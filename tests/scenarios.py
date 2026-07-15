@@ -661,12 +661,14 @@ SCENARIOS: Dict[str, Dict] = {
 
 SCENARIO_IDS: List[str] = list(SCENARIOS.keys())
 
-# falco를 건드리는 시나리오(S1, S5, S22, S23)가 25개 중 4개뿐이라 균등 랜덤
-# (random.choice(SCENARIO_IDS))으로는 falco 이벤트가 나머지 21개(k8s_audit/was/waf만
-# 건드리는 컨트롤 플레인 API 조작/로그인 실패 - 컨테이너 내부에서 아무것도 실행 안 해서
-# falco가 볼 게 없는 시나리오들)에 묻혀 4/25 확률로만 뽑힌다. dummy_generator.py의
-# "random" 선택이 이 목록을 갖고 falco 그룹 vs 나머지 그룹을 50:50으로 먼저 고른 뒤 그
-# 안에서 균등하게 뽑도록 두 그룹으로 나눠둔다 - 리스트 컴프리헨션이라 SCENARIOS에 새
-# falco 시나리오가 추가되면(modules에 "falco" 포함) 이 목록도 자동으로 갱신된다.
-FALCO_SCENARIO_IDS: List[str] = [sid for sid in SCENARIO_IDS if "falco" in SCENARIOS[sid]["modules"]]
-NON_FALCO_SCENARIO_IDS: List[str] = [sid for sid in SCENARIO_IDS if sid not in FALCO_SCENARIO_IDS]
+# k8s_audit를 건드리는 시나리오가 25개 중 20개라, 균등 랜덤(random.choice(SCENARIO_IDS))
+# 으로는 k8s_audit 로그만 쏟아지고 was(S19 하나)/waf(S4/S5 둘)/falco(S1/S5/S22/S23 넷)는
+# 묻힌다(예: was는 1/25=4% 확률로만 뽑힘). dummy_generator.py의 "random" 선택이 모듈
+# 채널(was/waf/falco/k8s_audit) 4개를 먼저 25:25:25:25로 고르고 그 안에서 균등하게
+# 뽑도록 이 딕셔너리로 나눠둔다 - 시나리오 하나가 모듈 여러 개를 건드리면(예: S1은
+# k8s_audit+falco, S5는 waf+falco) 해당하는 채널 버킷 전부에 들어간다. 리스트
+# 컴프리헨션이라 SCENARIOS에 새 시나리오가 추가되면 이 매핑도 자동으로 갱신된다.
+MODULE_SCENARIO_IDS: Dict[str, List[str]] = {
+    module: [sid for sid in SCENARIO_IDS if module in SCENARIOS[sid]["modules"]]
+    for module in ("was", "waf", "falco", "k8s_audit")
+}
