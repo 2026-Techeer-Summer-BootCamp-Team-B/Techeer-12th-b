@@ -1,5 +1,5 @@
 """
-IDS-COLLECTOR 상관분석 시나리오(S1~S18, servers/correlation-engine/app/scenarios/*.yaml)를
+IDS-COLLECTOR 상관분석 시나리오(S1~S25, servers/correlation-engine/app/scenarios/*.yaml)를
 바탕으로 실제 공격/정상 트래픽을 만들어내는 더미 생성기.
 
 이 스크립트는 "가짜 로그"를 직접 만들어 넣지 않는다 - 실제 K8s API 호출(scenarios.py,
@@ -10,6 +10,7 @@ k8s_actions.py)과 실제 HTTP 요청(waf_actions.py, WAF backend 경유)을 수
 CLI 사용:
     python dummy_generator.py --scenario random --count 3
     python dummy_generator.py --scenario S4 --count 1 --normal-per-attack 10
+    python dummy_generator.py --scenario normal --count 5   # 공격 없이 정상 트래픽만
     python dummy_generator.py --auto --interval 10 --per-tick 2   # Ctrl+C로 정지
 
 프론트엔드(dummy_ui/)는 이 파일의 generate()/run_auto()를 그대로 불러써서 실시간
@@ -31,13 +32,23 @@ import threading
 import time
 from typing import Iterator, Optional
 
+import k8s_actions as k8s
 import scenarios
 import waf_actions as waf
 
 DEFAULT_NORMAL_PER_ATTACK = 5
 
+# "random"/특정 시나리오 ID와 나란히 고를 수 있는 세 번째 케이스 - 공격이 전혀 없는
+# 트래픽만 재현한다(scenarios.SCENARIOS에는 안 넣는다 - SCENARIOS는 "발화시켜야 할
+# 공격 시나리오" 목록이고 이건 정반대 개념이라 섞으면 random 선택 시 이것도 뽑힐
+# 위험이 있음).
+_NORMAL_SCENARIO_ID = "NORMAL"
+
 
 def run_normal_traffic(n: int) -> Iterator[str]:
+    """공격 시나리오 1건당 같이 섞어 보낼 WAF 정상 트래픽(run_normal_only()와 달리
+    K8s 활동은 안 섞는다 - 이건 어디까지나 "공격 로그 사이에 섞인 잡음" 역할이라
+    기존 동작 그대로 유지)."""
     if n <= 0:
         return
     yield f"  - 정상 트래픽 {n}건 전송"
@@ -45,9 +56,32 @@ def run_normal_traffic(n: int) -> Iterator[str]:
         yield f"    {waf.send_normal_request()}"
 
 
+def _run_normal_k8s_action() -> str:
+    label, fn = k8s.random_normal_action()
+    try:
+        fn()
+        return f"  - {label} -> OK"
+    except k8s.K8sUnavailable as e:
+        return f"  - {label} -> K8s 접근 불가: {e}"
+    except Exception as e:
+        return f"  - {label} -> 실패: {e}"
+
+
+def run_normal_only(count: int) -> Iterator[str]:
+    """--scenario normal 전용 - 공격 없이 WAF 정상 트래픽 + K8s 정상 조회 활동을
+    한 쌍씩 count번 전송한다. run_normal_traffic()(공격 1건에 곁들이는 WAF 전용
+    정상 트래픽)과 달리 K8s 쪽 조회 활동도 포함해서 "공격이 하나도 없는 평범한
+    하루"를 WAF/K8s 양쪽 모두에서 재현한다."""
+    for _ in range(max(1, count)):
+        yield f"  - {waf.send_normal_request()}"
+        yield _run_normal_k8s_action()
+
+
 def _pick_scenario(scenario: str) -> Optional[str]:
     if scenario.upper() == "RANDOM":
         return random.choice(scenarios.SCENARIO_IDS)
+    if scenario.upper() == _NORMAL_SCENARIO_ID:
+        return _NORMAL_SCENARIO_ID
     if scenario.upper() in scenarios.SCENARIOS:
         return scenario.upper()
     return None
@@ -58,17 +92,29 @@ def generate(
     count: int = 1,
     normal_per_attack: int = DEFAULT_NORMAL_PER_ATTACK,
 ) -> Iterator[str]:
-    """scenario가 None/"random"이면 매 회차 무작위 시나리오, 특정 ID(예: "S4")면 그
-    시나리오만 count번 반복한다. normal_per_attack은 공격 1건당 같이 섞어 보낼 정상
-    트래픽 개수(0이면 정상 트래픽 없음) - "공격 : 정상" 비율을 여기서 조절한다."""
+    """scenario가 None/"random"이면 매 회차 무작위 공격 시나리오, "normal"이면 공격
+    없이 WAF+K8s 정상 트래픽 한 쌍만 매 회차 보낸다(count번 반복 = 정상 트래픽
+    count쌍, normal_per_attack은 이 모드에 적용되지 않음 - "공격 1건당"이라는 개념
+    자체가 없어서다), 특정 ID(예: "S4")면 그 공격 시나리오만 count번 반복한다.
+    normal_per_attack은 공격 시나리오에서만 공격 1건당 같이 섞어 보낼 정상 트래픽
+    개수(0이면 정상 트래픽 없음)를 조절한다."""
     count = max(1, min(count, 50))
     scenario = scenario or "random"
 
     for i in range(1, count + 1):
         chosen = _pick_scenario(scenario)
         if chosen is None:
-            yield f"[{i}/{count}] 알 수 없는 시나리오: {scenario} (사용 가능: {', '.join(scenarios.SCENARIO_IDS)})"
+            yield (
+                f"[{i}/{count}] 알 수 없는 시나리오: {scenario} "
+                f"(사용 가능: {_NORMAL_SCENARIO_ID}, random, {', '.join(scenarios.SCENARIO_IDS)})"
+            )
             return
+
+        if chosen == _NORMAL_SCENARIO_ID:
+            yield f"[{i}/{count}] {_NORMAL_SCENARIO_ID} - 정상 트래픽만 전송(공격 없음)"
+            yield from run_normal_only(1)
+            yield f"[{i}/{count}] 완료\n"
+            continue
 
         info = scenarios.SCENARIOS[chosen]
         yield f"[{i}/{count}] {chosen} - {info['name']} (모듈: {'/'.join(info['modules'])})"
@@ -116,7 +162,13 @@ def run_auto(
 
 def _cli() -> None:
     parser = argparse.ArgumentParser(description="IDS-COLLECTOR 상관분석 시나리오 더미 생성기")
-    parser.add_argument("--scenario", default="random", help=f"시나리오 ID(예: S4) 또는 random. 사용 가능: {', '.join(scenarios.SCENARIO_IDS)}")
+    parser.add_argument(
+        "--scenario", default="random",
+        help=(
+            f"시나리오 ID(예: S4), random(무작위 공격), 또는 {_NORMAL_SCENARIO_ID.lower()}"
+            f"(공격 없이 정상 트래픽만). 사용 가능: {', '.join(scenarios.SCENARIO_IDS)}"
+        ),
+    )
     parser.add_argument("--count", type=int, default=1, help="반복 횟수 (기본 1, --auto와 같이 안 씀)")
     parser.add_argument("--normal-per-attack", type=int, default=DEFAULT_NORMAL_PER_ATTACK, help="공격 1건당 정상 트래픽 개수 (기본 5, 0이면 없음)")
     parser.add_argument("--auto", action="store_true", help="자동 반복 모드 (Ctrl+C로 정지)")

@@ -302,9 +302,12 @@ function App() {
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
   const scenarioMap = Object.fromEntries(scenarios.map((s) => [s.id, s]));
+  const isNormalOnly = scenarioId === "normal";
   const scenarioDesc =
     scenarioId === "random"
-      ? "매 회차마다 S1~S18 중 하나를 무작위로 골라 실행합니다."
+      ? "매 회차마다 S1~S25 중 하나를 무작위로 골라 실행합니다."
+      : isNormalOnly
+      ? "공격 없이 WAF 정상 트래픽 + K8s 정상 조회 활동만 반복 횟수만큼 전송합니다(정상 트래픽 비율 입력란은 이 모드에서 쓰이지 않습니다)."
       : scenarioMap[scenarioId]
       ? `모듈: ${scenarioMap[scenarioId].modules.join(", ")}\n${scenarioMap[scenarioId].story}`
       : "";
@@ -369,7 +372,8 @@ function App() {
           <div>
             <label htmlFor="scenario">공격 시나리오</label>
             <select id="scenario" value={scenarioId} onChange={(e) => setScenarioId(e.target.value)}>
-              <option value="random">랜덤 (S1~S18 중 무작위)</option>
+              <option value="random">랜덤 (S1~S25 중 무작위)</option>
+              <option value="normal">정상 트래픽만 (공격 없음)</option>
               {scenarios.map((s) => (
                 <option key={s.id} value={s.id}>{s.id} - {s.name}</option>
               ))}
@@ -378,8 +382,13 @@ function App() {
           </div>
           <div>
             <label htmlFor="normal-ratio">정상 트래픽 비율 (공격 1건당 정상 트래픽 개수)</label>
-            <input type="number" id="normal-ratio" min="0" max="50" value={normalRatio}
+            <input type="number" id="normal-ratio" min="0" max="50" value={normalRatio} disabled={isNormalOnly}
                    onChange={(e) => setNormalRatio(e.target.value)} />
+            {isNormalOnly && (
+              <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
+                이 모드에서는 "반복 횟수"가 곧 전송할 정상 트래픽 건수입니다.
+              </div>
+            )}
           </div>
 
           <hr />
