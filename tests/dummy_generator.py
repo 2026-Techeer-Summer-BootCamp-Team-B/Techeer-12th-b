@@ -47,7 +47,12 @@ def run_normal_traffic(n: int) -> Iterator[str]:
 
 def _pick_scenario(scenario: str) -> Optional[str]:
     if scenario.upper() == "RANDOM":
-        return random.choice(scenarios.SCENARIO_IDS)
+        # falco 그룹(S1/S5, 2개)과 나머지(16개)를 카테고리 단위로 50:50 먼저 고르고
+        # 그 안에서 균등 추첨한다 - scenarios.SCENARIO_IDS를 그냥 균등 추첨하면 falco가
+        # 18개 중 2개뿐이라 1/9 확률로만 뽑혀 falco 트래픽이 나머지에 묻힌다
+        # (scenarios.py의 FALCO_SCENARIO_IDS/NON_FALCO_SCENARIO_IDS 주석 참고).
+        bucket = random.choice([scenarios.FALCO_SCENARIO_IDS, scenarios.NON_FALCO_SCENARIO_IDS])
+        return random.choice(bucket)
     if scenario.upper() in scenarios.SCENARIOS:
         return scenario.upper()
     return None

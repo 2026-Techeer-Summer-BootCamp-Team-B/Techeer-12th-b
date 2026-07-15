@@ -488,3 +488,11 @@ SCENARIOS: Dict[str, Dict] = {
 }
 
 SCENARIO_IDS: List[str] = list(SCENARIOS.keys())
+
+# falco를 건드리는 시나리오(S1, S5)가 18개 중 2개뿐이라 균등 랜덤(random.choice(SCENARIO_IDS))
+# 으로는 falco 이벤트가 나머지 16개(k8s_audit/waf만 건드리는 순수 컨트롤 플레인 API 조작 -
+# 컨테이너 내부에서 아무것도 실행 안 해서 falco가 볼 게 없는 시나리오들)에 묻혀 1/9 확률로만
+# 뽑힌다. dummy_generator.py의 "random" 선택이 이 목록을 갖고 falco 그룹 vs 나머지 그룹을
+# 50:50으로 먼저 고른 뒤 그 안에서 균등하게 뽑도록 두 그룹으로 나눠둔다.
+FALCO_SCENARIO_IDS: List[str] = [sid for sid in SCENARIO_IDS if "falco" in SCENARIOS[sid]["modules"]]
+NON_FALCO_SCENARIO_IDS: List[str] = [sid for sid in SCENARIO_IDS if sid not in FALCO_SCENARIO_IDS]
