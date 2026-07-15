@@ -32,14 +32,16 @@ def _step(label: str, fn: Callable[[], None]) -> Iterator[str]:
         yield f"  - {label} -> 실패: {e}"
 
 
-def _exec_many(namespace: str, pod_name: str, commands: List[str], label: str) -> Iterator[str]:
+def _exec_many(namespace: str, pod_name: str, commands: List[str], label: str, container: str = None) -> Iterator[str]:
     """pod 하나에 여러 명령을 순서대로 exec - falco 룰(예: "Terminal shell in
     container"는 tty가 있어야 잡히는 등 조건이 까다로워 명령 하나만으로는 stage2가
     안 걸릴 수 있다)이나 탐지 시그니처를 하나만 시도하면 못 뚫을 수 있어서, 여러
-    변형을 한 번에 다 시도해 그중 하나라도 매칭될 확률을 올린다."""
+    변형을 한 번에 다 시도해 그중 하나라도 매칭될 확률을 올린다. container는 pod에
+    컨테이너가 2개 이상일 때(예: S5의 Juice Shop pod) 반드시 지정해야 한다 -
+    안 그러면 exec 자체가 애매한 대상 때문에 알 수 없는 에러로 실패한다."""
     for idx, cmd in enumerate(commands, 1):
         try:
-            out = k8s.exec_in_pod(namespace, pod_name, ["sh", "-c", cmd])
+            out = k8s.exec_in_pod(namespace, pod_name, ["sh", "-c", cmd], container=container)
             yield f"  - {label} {idx}/{len(commands)}: {cmd} -> OK ({out.strip()[:80]})"
         except Exception as e:
             yield f"  - {label} {idx}/{len(commands)}: {cmd} -> 실패: {e}"
@@ -160,7 +162,7 @@ def _run_s5() -> Iterator[str]:
 
     if real_pod:
         yield "  - stage2: 해당 pod에서 K8s API 서버 접근/쉘 실행을 여러 방식으로 시도(falco 'Terminal shell in container'/'Contact K8s API Server From Container' 노려봄)"
-        yield from _exec_many("default", real_pod, _S5_EXEC_COMMANDS, "시도")
+        yield from _exec_many("default", real_pod, _S5_EXEC_COMMANDS, "시도", container="juice-shop")
 
 
 def _run_s6() -> Iterator[str]:

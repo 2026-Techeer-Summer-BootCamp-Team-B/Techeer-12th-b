@@ -129,13 +129,19 @@ def wait_pod_running(namespace: str, name: str, timeout_s: int = 40) -> None:
     raise TimeoutError(f"pod {namespace}/{name}이 {timeout_s}초 안에 Running이 안 됨 (마지막 상태: {last_phase})")
 
 
-def exec_in_pod(namespace: str, name: str, command: List[str]) -> str:
+def exec_in_pod(namespace: str, name: str, command: List[str], container: Optional[str] = None) -> str:
+    """container를 안 주면(=None) 파드에 컨테이너가 2개 이상일 때 exec 웹소켓
+    핸드셰이크가 애매한 대상으로 인해 apiserver가 곧바로 커넥션을 끊어버리고,
+    kubernetes 클라이언트는 그걸 "실패: 'NoneType' object has no attribute 'decode'"라는
+    의미 없는 에러로 감싸 올린다(Juice Shop pod처럼 sidecar가 있는 경우 실제로 겪음) -
+    반드시 대상 컨테이너를 명시해야 한다."""
     core, _ = _clients()
     return stream(
         core.connect_get_namespaced_pod_exec,
         name,
         namespace,
         command=command,
+        container=container,
         stderr=True,
         stdin=False,
         stdout=True,
