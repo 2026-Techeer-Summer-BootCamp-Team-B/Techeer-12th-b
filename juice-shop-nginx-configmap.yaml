@@ -3,50 +3,66 @@ kind: ConfigMap
 metadata:
   name: juice-shop-nginx-conf
 data:
-  nginx.conf: |
+  # 파일명이 *.template인 이유: nginx 공식 이미지의 docker-entrypoint.sh가 컨테이너
+  # 시작 시 /etc/nginx/templates/*.template을 envsubst로 렌더링해서 그대로 이름에서
+  # .template만 뗀 파일로 /etc/nginx/conf.d/에 떨궈준다(nginx:1.19+ 내장 기능, 별도
+  # 스크립트 불필요) - juice-shop-with-nginx-sidecar.yaml에서 이 파일을
+  # /etc/nginx/templates/default.conf.template로 마운트하고, 기본 이미지의
+  # /etc/nginx/nginx.conf(건드리지 않음)가 이걸 conf.d에서 include한다.
+  #
+  # 아래 ${POD_NAME}/${POD_NAMESPACE}는 그 렌더링 시점에 컨테이너 env(Downward API로
+  # 채움, Deployment 참고)로 치환된다 - nginx 내장 변수($remote_addr 등)는 실제 env var가
+  # 아니라서 envsubst가 건드리지 않고 그대로 남는다(nginx 공식 이미지 entrypoint가
+  # "현재 정의된 env var 이름 목록"만 치환 대상으로 넘기는 방식이라 안전).
+  default.conf.template: |
     # Juice Shop 앞단에서 요청/응답을 그대로 통과시키면서 access log만 남기는 설정.
     # WAF처럼 차단하는 게 아니라, "요청이 있었다"는 사실만 stdout에 기록하는 게 목적.
+    log_format was_json escape=json
+      '{'
+        '"time":"$time_iso8601",'
+        '"remote_addr":"$remote_addr",'
+        '"http_x_forwarded_for":"$http_x_forwarded_for",'
+        '"method":"$request_method",'
+        '"path":"$uri",'
+        '"query":"$args",'
+        '"status":$status,'
+        '"body_bytes_sent":$body_bytes_sent,'
+        '"request_time":$request_time,'
+        '"user_agent":"$http_user_agent",'
+        '"referer":"$http_referer",'
+        '"x_forwarded_for":"$http_x_forwarded_for",'
+        '"orchestrator_namespace":"${POD_NAMESPACE}",'
+        '"orchestrator_pod":"${POD_NAME}",'
+        '"target_name":"${TARGET_NAME}"'
+      '}';
 
-    events {}
+    access_log /dev/stdout was_json;
+    error_log /dev/stderr warn;
 
-    http {
-      # JSON 형태로 로그를 남겨야 나중에 OTel Collector가 파싱하기 편함
-      log_format was_json escape=json
-        '{'
-          '"time":"$time_iso8601",'
-          '"remote_addr":"$remote_addr",'
-          '"http_x_forwarded_for":"$http_x_forwarded_for",'
-          '"method":"$request_method",'
-          '"path":"$uri",'
-          '"query":"$args",'
-          '"status":$status,'
-          '"body_bytes_sent":$body_bytes_sent,'
-          '"request_time":$request_time,'
-          '"user_agent":"$http_user_agent",'
-          '"referer":"$http_referer"'
-        '}';
+    server {
+      listen 8080;
 
-      access_log /dev/stdout was_json;
-      error_log /dev/stderr warn;
+      # Netdata(go.d.plugin) 등 로컬 모니터링 에이전트가 주기적으로 /metrics를
+      # 스크래핑하면서 이게 그대로 access log에 찍혀 SIEM에 "WAS 이벤트"로
+      # 들어가던 문제 - Juice Shop엔 애초에 이 경로가 없어 프록시할 필요도 없으니
+      # access_log를 끄고 바로 204로 끊는다 (실제 공격 트래픽과 무관한 노이즈).
+      location = /metrics {
+        access_log off;
+        return 204;
+      }
 
-      server {
-        listen 8080;
+      location / {
+        # 같은 Pod 안의 juice-shop 컨테이너로 그대로 전달 (localhost로 접근 가능)
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 
-        # Netdata(go.d.plugin) 등 로컬 모니터링 에이전트가 주기적으로 /metrics를
-        # 스크래핑하면서 이게 그대로 access log에 찍혀 SIEM에 "WAS 이벤트"로
-        # 들어가던 문제 - Juice Shop엔 애초에 이 경로가 없어 프록시할 필요도 없으니
-        # access_log를 끄고 바로 204로 끊는다 (실제 공격 트래픽과 무관한 노이즈).
-        location = /metrics {
-          access_log off;
-          return 204;
-        }
-
-        location / {
-          # 같은 Pod 안의 juice-shop 컨테이너로 그대로 전달 (localhost로 접근 가능)
-          proxy_pass http://127.0.0.1:3000;
-          proxy_set_header Host $host;
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        }
+        # WAF backend(app/proxy/proxy.py)가 Juice Shop을 프록시할 때 이 헤더를 그대로
+        # 읽어서 "실제로 이 요청을 처리한 pod"를 WafAlert에 실어 보낸다. 정적 하드코딩과
+        # 달리 매 요청마다 실제 서빙한 pod를 정확히 가리키므로, 레플리카가 여러 개여도
+        # 그리고 재배포로 pod 해시가 바뀌어도 항상 맞는 값이 나간다.
+        add_header X-Served-By-Pod "${POD_NAME}" always;
+        add_header X-Served-By-Namespace "${POD_NAMESPACE}" always;
       }
     }

@@ -1,2 +1,5 @@
 requests
 Faker
+kubernetes
+fastapi
+uvicorn[standard]

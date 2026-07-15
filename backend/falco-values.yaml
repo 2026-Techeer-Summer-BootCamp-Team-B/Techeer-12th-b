@@ -16,3 +16,155 @@ tty: true
 
 falco:
   json_output: true
+
+# 크립토마이닝 탐지 (2026-07-14, S22/T1496 재료). 코어 falco_rules.yaml이 아니라
+# falcosecurity/rules 저장소의 falco-sandbox_rules.yaml에 있는 3개 룰을 그대로
+# 옮겼다(WebFetch로 원본 재확인, S1의 "Terminal shell in container"류와 같은
+# 근거 수준 - 만들어낸 게 아님). "Detect outbound connections to common miner
+# pool ports"는 원본이 enabled: false(오탐 가능성 때문에 기본 꺼짐)라 여기서
+# 명시적으로 true로 재정의해서 켠다 - 이 프로젝트는 단일 데모 클러스터라 실제
+# 마이너 풀 도메인/포트로 나가는 트래픽이 있을 리 없어서 오탐 리스크가 낮다.
+customRules:
+  rules-cryptomining.yaml: |-
+    - list: miner_ports
+      items: [
+            25, 3333, 3334, 3335, 3336, 3357, 4444,
+            5555, 5556, 5588, 5730, 6099, 6666, 7777,
+            7778, 8000, 8001, 8008, 8080, 8118, 8333,
+            8888, 8899, 9332, 9999, 14433, 14444,
+            45560, 45700
+        ]
+
+    - list: miner_domains
+      items: [
+          "asia1.ethpool.org","ca.minexmr.com",
+          "cn.stratum.slushpool.com","de.minexmr.com",
+          "eth-ar.dwarfpool.com","eth-asia.dwarfpool.com",
+          "eth-asia1.nanopool.org","eth-au.dwarfpool.com",
+          "eth-au1.nanopool.org","eth-br.dwarfpool.com",
+          "eth-cn.dwarfpool.com","eth-cn2.dwarfpool.com",
+          "eth-eu.dwarfpool.com","eth-eu1.nanopool.org",
+          "eth-eu2.nanopool.org","eth-hk.dwarfpool.com",
+          "eth-jp1.nanopool.org","eth-ru.dwarfpool.com",
+          "eth-ru2.dwarfpool.com","eth-sg.dwarfpool.com",
+          "eth-us-east1.nanopool.org","eth-us-west1.nanopool.org",
+          "eth-us.dwarfpool.com","eth-us2.dwarfpool.com",
+          "eu.stratum.slushpool.com","eu1.ethermine.org",
+          "eu1.ethpool.org","fr.minexmr.com",
+          "mine.moneropool.com","mine.xmrpool.net",
+          "pool.minexmr.com","pool.monero.hashvault.pro",
+          "pool.supportxmr.com","sg.minexmr.com",
+          "sg.stratum.slushpool.com","stratum-eth.antpool.com",
+          "stratum-ltc.antpool.com","stratum-zec.antpool.com",
+          "stratum.antpool.com","us-east.stratum.slushpool.com",
+          "us1.ethermine.org","us1.ethpool.org",
+          "us2.ethermine.org","us2.ethpool.org",
+          "xmr-asia1.nanopool.org","xmr-au1.nanopool.org",
+          "xmr-eu1.nanopool.org","xmr-eu2.nanopool.org",
+          "xmr-jp1.nanopool.org","xmr-us-east1.nanopool.org",
+          "xmr-us-west1.nanopool.org","xmr.crypto-pool.fr",
+          "xmr.pool.minergate.com", "rx.unmineable.com",
+          "ss.antpool.com","dash.antpool.com",
+          "eth.antpool.com","zec.antpool.com",
+          "xmc.antpool.com","btm.antpool.com",
+          "stratum-dash.antpool.com","stratum-xmc.antpool.com",
+          "stratum-btm.antpool.com"
+          ]
+
+    - list: https_miner_domains
+      items: [
+        "ca.minexmr.com",
+        "cn.stratum.slushpool.com",
+        "de.minexmr.com",
+        "fr.minexmr.com",
+        "mine.moneropool.com",
+        "mine.xmrpool.net",
+        "pool.minexmr.com",
+        "sg.minexmr.com",
+        "stratum-eth.antpool.com",
+        "stratum-ltc.antpool.com",
+        "stratum-zec.antpool.com",
+        "stratum.antpool.com",
+        "xmr.crypto-pool.fr",
+        "ss.antpool.com",
+        "stratum-dash.antpool.com",
+        "stratum-xmc.antpool.com",
+        "stratum-btm.antpool.com",
+        "btm.antpool.com"
+      ]
+
+    - list: http_miner_domains
+      items: [
+        "ca.minexmr.com",
+        "de.minexmr.com",
+        "fr.minexmr.com",
+        "mine.moneropool.com",
+        "mine.xmrpool.net",
+        "pool.minexmr.com",
+        "sg.minexmr.com",
+        "xmr.crypto-pool.fr"
+      ]
+
+    - list: miner_binaries
+      items: [
+        xmrig, xmr-stak, minerd, minergate, cpuminer, ccminer,
+        ethminer, cgminer, bfgminer, sgminer, claymore, nbminer,
+        t-rex, gminer, lolminer, phoenixminer, teamredminer,
+        nanominer, bminer, wildrig, srbminer
+      ]
+
+    - macro: minerpool_https
+      condition: (fd.sport="443" and fd.sip.name in (https_miner_domains))
+
+    - macro: minerpool_http
+      condition: (fd.sport="80" and fd.sip.name in (http_miner_domains))
+
+    - macro: minerpool_other
+      condition: (fd.sport in (miner_ports) and fd.sip.name in (miner_domains))
+
+    - macro: net_miner_pool
+      condition: (evt.type in (sendto, sendmsg, connect) and (fd.net != "127.0.0.0/8" and not fd.snet in (rfc_1918_addresses)) and ((minerpool_http) or (minerpool_https) or (minerpool_other)))
+
+    - macro: trusted_images_query_miner_domain_dns
+      condition: (container.image.repository in (falco_containers))
+
+    - macro: is_miner_process
+      condition: (proc.name in (miner_binaries))
+
+    - rule: Detect outbound connections to common miner pool ports
+      desc: >
+        Miners usually connect to miner pools using standard ports, and this rule flags such activity.
+      condition: >
+        net_miner_pool
+        and not trusted_images_query_miner_domain_dns
+      output: >
+        Outbound connection to IP/Port flagged by https://cryptoioc.ch (command=%proc.cmdline pid=%proc.pid port=%fd.rport ip=%fd.rip container=%container.info image=%container.image.repository)
+      priority: CRITICAL
+      tags: [network, mitre_execution]
+      enabled: true
+
+    - rule: Detect crypto miners using the Stratum protocol
+      desc: >
+        Miners typically specify the mining pool to connect with a URI that begins with stratum+tcp,
+        because Stratum is a line-based protocol using a plain TCP socket.
+      condition: >
+        spawned_process
+        and (proc.cmdline contains "stratum+tcp" or
+             proc.cmdline contains "stratum2+tcp" or
+             proc.cmdline contains "stratum+ssl" or
+             proc.cmdline contains "stratum2+ssl")
+      output: >
+        Possible miner running (command=%proc.cmdline pid=%proc.pid container=%container.info image=%container.image.repository)
+      priority: CRITICAL
+      tags: [process, mitre_execution]
+
+    - rule: Known Cryptominer Process Executed
+      desc: >
+        Detect the execution of a process with a name that matches a well-known cryptocurrency miner binary.
+      condition: >
+        spawned_process
+        and is_miner_process
+      output: >
+        Cryptocurrency miner process detected (command=%proc.cmdline pid=%proc.pid container=%container.info image=%container.image.repository)
+      priority: CRITICAL
+      tags: [process, mitre_execution]

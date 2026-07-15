@@ -14,11 +14,21 @@ class Settings(BaseSettings):
     # 이제 백엔드 자체가 k3d 클러스터 안에 Pod로 떠서, k8s DNS로 juice-shop 서비스에 접근한다.
     target_service_url: str = "http://juice-shop:3000"
 
+    # 이 WAF backend 인스턴스가 보호하는 타깃의 이름 - IDS-COLLECTOR의 `targets`
+    # 테이블(POST /targets로 등록하는 name)과 같은 값으로 맞춰야 한다. 여러 타깃을
+    # 보호하려면 WAF backend+WAS 사이드카 한 세트를 타깃마다 통째로 복제 배포하고
+    # (juice-shop-with-nginx-sidecar.yaml/backend-deployment.yaml 참고) 이 값과
+    # TARGET_SERVICE_URL만 그 타깃에 맞게 바꾼다 - 하나의 프로세스가 여러 타깃을
+    # 동시에 처리하는 라우팅은 하지 않는다(Traefik이 원래 담당하는 역할이라
+    # 여기서 다시 만들 필요 없음). WafAlert.target_name(schemas.py)에 실어서
+    # IDS-COLLECTOR까지 전파된다(app/proxy/proxy.py 참고).
+    target_name: str = "juice-shop"
+
     # Rate Limiting 설정 (담당: 이용욱)
     rate_limit_window_seconds: int = 60
     rate_limit_max_requests: int = 30
 
-    # OTel Collector 접속 정보 (담당: 심다움) - 탐지된 AttackLog를 여기로 OTLP(HTTP) push.
+    # OTel Collector 접속 정보 (담당: 심다움) - 탐지된 WafAlert를 여기로 OTLP(HTTP) push.
     # otel-collector-deployment.yaml이 만드는 클러스터 내부 Service 이름을 그대로 씀.
     # 필드명을 OTel 표준 환경변수(OTEL_EXPORTER_OTLP_ENDPOINT)에 그대로 맞춰서
     # pydantic-settings가 별도 alias 없이 자동으로 매핑하게 함.
@@ -46,6 +56,13 @@ class Settings(BaseSettings):
     # 이 목록에 있는 IP에서 직접 연결된 요청만 X-Forwarded-For 헤더를 신뢰한다.
     # 비워두면(로컬 개발 등) X-Forwarded-For를 아예 무시하고 직접 연결 IP만 사용.
     trusted_proxies_raw: str = ""
+
+    # WAF 운영 모드 (담당: 심다움) — 분석 서버가 규격화하는 events.normalized 스키마의
+    # waf.mode/waf.blocked 값을 여기서 채운다.
+    # "detection"(기본값): 탐지만 하고 로그만 남김. "prevention": 시연용으로 blocked=True를
+    # 로그에 표시. 실제 요청 차단(403 응답)은 여전히 WAS 책임이라 이 모드가 트래픽을
+    # 막지는 않는다 — 어디까지나 로그에 남는 표시값이다.
+    waf_mode: str = "detection"
 
     class Config:
         env_file = ".env"

@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>IDS-COLLECTOR 더미 공격 생성기</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%; margin: 0; font-family: -apple-system, "Segoe UI", sans-serif;
+    background: #0f1115; color: #e6e6e6;
+  }
+  #root { display: flex; flex-direction: column; height: 100vh; }
+  header {
+    flex: 0 0 auto; padding: 16px 24px; border-bottom: 1px solid #262b36;
+    display: flex; align-items: center; gap: 12px;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #555; }
+  .dot.running { background: #ef4444; box-shadow: 0 0 8px #ef4444; animation: pulse 1s infinite; }
+  .dot.auto { background: #f59e0b; box-shadow: 0 0 8px #f59e0b; }
+  @keyframes pulse { 50% { opacity: 0.4; } }
+
+  /* main을 뷰포트 남은 높이에 정확히 묶어야(min-height:0까지) 자식의
+     overflow-y:auto가 진짜로 먹는다 - 안 그러면 내용이 쌓일수록 박스(결국
+     페이지)가 끝없이 늘어나는 flexbox 버그가 남는다. */
+  main {
+    flex: 1 1 auto; min-height: 0; display: flex; gap: 24px; padding: 24px;
+    max-width: 1280px; width: 100%; margin: 0 auto; overflow: hidden;
+  }
+  .panel { background: #171a21; border: 1px solid #262b36; border-radius: 10px; padding: 20px; }
+
+  #controls { flex: 0 0 340px; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
+  #controls label { font-size: 13px; color: #9aa4b2; display: block; margin-bottom: 6px; }
+  #controls h2 { font-size: 13px; margin: 0 0 4px; color: #e6e6e6; font-weight: 600; }
+  #controls hr { border: none; border-top: 1px solid #262b36; margin: 4px 0; width: 100%; }
+  select, input[type=number] {
+    width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid #333a48;
+    background: #0f1115; color: #e6e6e6; font-size: 14px;
+  }
+  .row { display: flex; gap: 10px; }
+  .row > div { flex: 1; }
+  button {
+    padding: 12px; border: none; border-radius: 8px; font-weight: 600; font-size: 14px; cursor: pointer;
+  }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.run { background: #dc2626; color: white; }
+  button.run:hover:not(:disabled) { background: #b91c1c; }
+  button.auto-start { background: #f59e0b; color: #1a1300; }
+  button.auto-start:hover:not(:disabled) { background: #d97706; }
+  button.auto-stop { background: #374151; color: #e6e6e6; }
+  button.auto-stop:hover:not(:disabled) { background: #4b5563; }
+  #scenario-desc { font-size: 12px; color: #9aa4b2; line-height: 1.5; min-height: 32px; white-space: pre-line; }
+
+  #log-panel { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  #log-panel h2 { flex: 0 0 auto; font-size: 13px; margin: 0 0 12px; color: #9aa4b2; font-weight: 600; }
+  #log-panel h2 span { font-weight: 400; color: #6b7280; }
+
+  #log-feed {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; background: #0a0c10; border-radius: 8px;
+    padding: 12px; display: flex; flex-direction: column; gap: 6px;
+  }
+
+  .row-header { font-size: 12px; font-weight: 700; color: #f87171; margin: 10px 2px 2px; }
+  .row-header:first-child { margin-top: 2px; }
+  .row-meta { font-size: 12px; color: #6b7280; padding: 1px 4px; font-style: italic; }
+
+  .card {
+    font-family: "SF Mono", Consolas, monospace; font-size: 12.5px; line-height: 1.5;
+    padding: 8px 12px; border-radius: 6px; border-left: 3px solid #374151; background: #12151c;
+    cursor: pointer; word-break: break-all;
+  }
+  .card:hover { background: #181c26; }
+  .card.ok { border-left-color: #4ade80; color: #d1fae5; }
+  .card.fail { border-left-color: #f87171; color: #fecaca; }
+  .card.blocked { border-left-color: #6b7280; color: #cbd5e1; }
+  .card.exposed { border-left-color: #a855f7; color: #f3e8ff; }
+  .card.http-get { border-left-color: #38bdf8; color: #cffafe; }
+  .card.http-post { border-left-color: #fb923c; color: #ffedd5; }
+  .card-hint { float: right; color: #6b7280; font-size: 11px; }
+
+  #raw-modal {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    align-items: center; justify-content: center; z-index: 50;
+  }
+  #raw-modal.open { display: flex; }
+  .raw-modal-box {
+    width: min(920px, 92vw); height: min(760px, 88vh); background: #171a21;
+    border: 1px solid #262b36; border-radius: 10px; display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .raw-modal-header {
+    padding: 14px 18px; border-bottom: 1px solid #262b36; display: flex;
+    align-items: center; justify-content: space-between; flex: 0 0 auto; gap: 12px;
+  }
+  .raw-modal-title { font-size: 13px; font-weight: 600; font-family: "SF Mono", Consolas, monospace; }
+  .raw-modal-close {
+    background: #374151; color: #e6e6e6; border: none; border-radius: 6px;
+    padding: 6px 10px; cursor: pointer; font-size: 12px; flex: 0 0 auto;
+  }
+  .raw-modal-tabs { display: flex; gap: 6px; padding: 10px 18px 0; flex: 0 0 auto; }
+  .raw-tab {
+    background: #0f1115; border: 1px solid #333a48; color: #9aa4b2; border-radius: 6px 6px 0 0;
+    padding: 6px 12px; font-size: 12px; cursor: pointer;
+  }
+  .raw-tab.active { background: #0a0c10; color: #e6e6e6; border-bottom-color: #0a0c10; }
+  .raw-modal-body {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; background: #0a0c10; margin: 0 18px 18px;
+    border-radius: 0 8px 8px 8px; padding: 14px; font-family: "SF Mono", Consolas, monospace;
+    font-size: 12px; line-height: 1.55;
+  }
+  .raw-entry { padding: 8px 0; border-bottom: 1px solid #1c212b; }
+  .raw-entry:last-child { border-bottom: none; }
+  .raw-entry-ts { color: #6b7280; margin-bottom: 3px; }
+  .raw-entry-body { color: #a7f3d0; white-space: pre-wrap; word-break: break-all; }
+  .raw-modal-empty { color: #6b7280; padding: 20px; text-align: center; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<!-- type="text/plain"이라 Babel의 자동 스크립트 스캔 대상이 아니다 - 아래
+     부트스트랩 스크립트가 이 textContent를 직접 Babel.transform()에 넘긴다.
+     Babel standalone의 "react" 프리셋 기본값(automatic runtime)은
+     `import {jsx} from "react/jsx-runtime"`을 내보내는데, 이 페이지는 모듈
+     로더/importmap 없이 UMD React 전역만 쓰는 평범한 <script>라 그 import가
+     브라우저에서 그대로 터진다(SyntaxError) - runtime: "classic"을 명시해서
+     React.createElement 호출로 컴파일되게 강제해야 한다. -->
+<script type="text/plain" id="app-jsx">
+const { useState, useEffect, useRef, useCallback } = React;
+
+const RAW_SOURCE_LABELS = { k8s_audit: "K8s Audit", waf: "WAF", falco: "Falco", was: "Web(WAS)" };
+
+// scenarios.py가 내는 텍스트 한 줄을 카드 스타일로 분류한다. 백엔드(dummy_ui/server.py
+// _append())가 이미 "event"인 줄만 카드 후보로 넘겨주므로, 여기선 그 안에서 색깔만 고른다.
+function cardClass(text) {
+  if (/-> 실패:/.test(text)) return "card fail";
+  if (/: 차단됨\(/.test(text)) return "card blocked";
+  if (/: 성공\(/.test(text)) return "card exposed";
+  if (/-> OK\b/.test(text)) return "card ok";
+  const httpMatch = text.match(/^(GET|POST|PUT|DELETE|PATCH)\s+\/proxy\//);
+  if (httpMatch) return httpMatch[1] === "GET" ? "card http-get" : "card http-post";
+  return "card";
+}
+
+function Card({ entry, onOpen }) {
+  return (
+    <div className={cardClass(entry.text)} onClick={() => onOpen(entry)}>
+      {entry.text}
+      <span className="card-hint">원본 로그 ↗</span>
+    </div>
+  );
+}
+
+function LogFeed({ entries, onOpenEvent }) {
+  const feedRef = useRef(null);
+  useEffect(() => {
+    const el = feedRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [entries.length]);
+
+  return (
+    <div id="log-feed" ref={feedRef}>
+      {entries.map((e) => {
+        if (e.kind === "header") {
+          return <div className="row-header" key={e.id}>{e.text}</div>;
+        }
+        if (e.kind === "event") {
+          return <Card key={e.id} entry={e} onOpen={onOpenEvent} />;
+        }
+        // kind === "meta" (스토리/스테이지 라벨/경고 등) - "suppress"는 애초에
+        // /status에서 걸러져 여기 안 옴.
+        return <div className="row-meta" key={e.id}>{e.text}</div>;
+      })}
+    </div>
+  );
+}
+
+function RawModal({ event, onClose }) {
+  const [logs, setLogs] = useState(null);
+  const [activeSource, setActiveSource] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!event) return;
+    setLogs(null);
+    setError(null);
+    // event.id는 /status의 전체 로그 줄 번호(헤더/메타 포함 전역 시퀀스)고, 이
+    // 액션 하나만의 원본 로그 조회 키는 event.event_id(server.py의 _events
+    // 딕셔너리 키) - 둘을 헷갈리면 엉뚱한 액션의 로그가 나온다(실측 확인, 브라우저
+    // 클릭 테스트 중 발견: id=4로 조회했더니 event_id=1이 아니라 4번째 액션의
+    // 로그가 나옴).
+    fetch(`/events/${event.event_id}/raw`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        setLogs(data.logs);
+        const bySize = Object.keys(RAW_SOURCE_LABELS).sort(
+          (a, b) => (data.logs[b] || []).length - (data.logs[a] || []).length
+        );
+        setActiveSource(bySize[0]);
+      })
+      .catch((e) => setError(String(e)));
+  }, [event]);
+
+  if (!event) return null;
+
+  const entries = (logs && logs[activeSource]) || [];
+
+  return (
+    <div id="raw-modal" className="open" onClick={(e) => { if (e.target.id === "raw-modal") onClose(); }}>
+      <div className="raw-modal-box">
+        <div className="raw-modal-header">
+          <div className="raw-modal-title">{event.text}</div>
+          <button className="raw-modal-close" onClick={onClose}>닫기</button>
+        </div>
+        <div className="raw-modal-tabs">
+          {logs &&
+            Object.keys(RAW_SOURCE_LABELS).map((src) => (
+              <div
+                key={src}
+                className={`raw-tab${src === activeSource ? " active" : ""}`}
+                onClick={() => setActiveSource(src)}
+              >
+                {RAW_SOURCE_LABELS[src]} ({(logs[src] || []).length})
+              </div>
+            ))}
+        </div>
+        <div className="raw-modal-body">
+          {error && <div className="raw-modal-empty">조회 실패: {error}</div>}
+          {!error && !logs && (
+            <div className="raw-modal-empty">
+              조회 중... (k3d 노드/otel-collector에서 직접 읽어오는 중이라 몇 초 걸릴 수 있습니다)
+            </div>
+          )}
+          {!error && logs && entries.length === 0 && (
+            <div className="raw-modal-empty">
+              이 액션의 시간창 안에서 {RAW_SOURCE_LABELS[activeSource]} 원본 로그를 못 찾았습니다.
+            </div>
+          )}
+          {!error &&
+            entries.map((e, i) => (
+              <div className="raw-entry" key={i}>
+                <div className="raw-entry-ts">
+                  {e.timestamp ? new Date(e.timestamp * 1000).toISOString() : "(시각 불명)"}
+                </div>
+                <div className="raw-entry-body">
+                  {typeof e.raw === "string" ? e.raw : JSON.stringify(e.raw, null, 2)}
+                </div>
+              </div>
+            ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [scenarios, setScenarios] = useState([]);
+  const [scenarioId, setScenarioId] = useState("random");
+  const [normalRatio, setNormalRatio] = useState(5);
+  const [count, setCount] = useState(1);
+  const [interval, setIntervalSec] = useState(10);
+  const [perTick, setPerTick] = useState(1);
+  const [mode, setMode] = useState("idle");
+  const [entries, setEntries] = useState([]);
+  const [openEvent, setOpenEvent] = useState(null);
+
+  const lastIdRef = useRef(0);
+  const pollRef = useRef(null);
+
+  useEffect(() => {
+    fetch("/scenario-list")
+      .then((res) => res.json())
+      .then(setScenarios);
+  }, []);
+
+  const poll = useCallback(async () => {
+    const res = await fetch(`/status?after=${lastIdRef.current}`);
+    const data = await res.json();
+    if (data.entries.length) {
+      setEntries((prev) => [...prev, ...data.entries.filter((e) => e.kind !== "suppress")]);
+      lastIdRef.current = data.entries[data.entries.length - 1].id;
+    }
+    setMode(data.mode);
+    if (!data.running && pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
+
+  const ensurePolling = useCallback(() => {
+    if (!pollRef.current) pollRef.current = setInterval(poll, 1000);
+  }, [poll]);
+
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
+  const scenarioMap = Object.fromEntries(scenarios.map((s) => [s.id, s]));
+  const scenarioDesc =
+    scenarioId === "random"
+      ? "매 회차마다 S1~S18 중 하나를 무작위로 골라 실행합니다."
+      : scenarioMap[scenarioId]
+      ? `모듈: ${scenarioMap[scenarioId].modules.join(", ")}\n${scenarioMap[scenarioId].story}`
+      : "";
+
+  async function handleRun() {
+    const body = {
+      scenario: scenarioId,
+      count: Math.max(1, Math.min(50, Number(count) || 1)),
+      normal_per_attack: Math.max(0, Math.min(50, Number(normalRatio) || 0)),
+    };
+    const res = await fetch("/trigger", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.status === "busy") {
+      setEntries((prev) => [
+        ...prev,
+        { id: `local-${Date.now()}`, kind: "meta", text: `이미 실행 중입니다(${data.mode}) - 끝날 때까지 기다려주세요.` },
+      ]);
+      return;
+    }
+    ensurePolling();
+  }
+
+  async function handleAutoStart() {
+    const body = {
+      scenario: scenarioId,
+      attacks_per_tick: Math.max(1, Math.min(20, Number(perTick) || 1)),
+      interval_seconds: Math.max(1, Math.min(3600, Number(interval) || 10)),
+      normal_per_attack: Math.max(0, Math.min(50, Number(normalRatio) || 0)),
+    };
+    const res = await fetch("/auto/start", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.status === "busy") {
+      setEntries((prev) => [
+        ...prev,
+        { id: `local-${Date.now()}`, kind: "meta", text: `이미 실행 중입니다(${data.mode}) - 끝날 때까지 기다려주세요.` },
+      ]);
+      return;
+    }
+    ensurePolling();
+  }
+
+  async function handleAutoStop() {
+    await fetch("/auto/stop", { method: "POST" });
+    ensurePolling();
+  }
+
+  return (
+    <React.Fragment>
+      <header>
+        <div className={`dot${mode === "manual" ? " running" : ""}${mode === "auto" ? " auto" : ""}`}></div>
+        <h1>IDS-COLLECTOR 더미 공격 생성기</h1>
+        <span style={{ color: "#9aa4b2", fontSize: 13 }}>
+          {{ idle: "대기 중", manual: "실행 중...", auto: "자동 실행 중..." }[mode] || mode}
+        </span>
+      </header>
+      <main>
+        <div id="controls" className="panel">
+          <div>
+            <label htmlFor="scenario">공격 시나리오</label>
+            <select id="scenario" value={scenarioId} onChange={(e) => setScenarioId(e.target.value)}>
+              <option value="random">랜덤 (S1~S18 중 무작위)</option>
+              {scenarios.map((s) => (
+                <option key={s.id} value={s.id}>{s.id} - {s.name}</option>
+              ))}
+            </select>
+            <div id="scenario-desc">{scenarioDesc}</div>
+          </div>
+          <div>
+            <label htmlFor="normal-ratio">정상 트래픽 비율 (공격 1건당 정상 트래픽 개수)</label>
+            <input type="number" id="normal-ratio" min="0" max="50" value={normalRatio}
+                   onChange={(e) => setNormalRatio(e.target.value)} />
+          </div>
+
+          <hr />
+          <h2>지금 바로 실행</h2>
+          <div>
+            <label htmlFor="count">반복 횟수</label>
+            <input type="number" id="count" min="1" max="50" value={count}
+                   onChange={(e) => setCount(e.target.value)} />
+          </div>
+          <button className="run" disabled={mode !== "idle"} onClick={handleRun}>공격 시작</button>
+
+          <hr />
+          <h2>자동 실행 (몇 초당 몇 개)</h2>
+          <div className="row">
+            <div>
+              <label htmlFor="interval">주기(초)</label>
+              <input type="number" id="interval" min="1" max="3600" value={interval}
+                     onChange={(e) => setIntervalSec(e.target.value)} />
+            </div>
+            <div>
+              <label htmlFor="per-tick">주기당 공격 수</label>
+              <input type="number" id="per-tick" min="1" max="20" value={perTick}
+                     onChange={(e) => setPerTick(e.target.value)} />
+            </div>
+          </div>
+          <button className="auto-start" disabled={mode !== "idle"} onClick={handleAutoStart}>자동 실행 시작</button>
+          <button className="auto-stop" disabled={mode !== "auto"} onClick={handleAutoStop}>자동 실행 정지</button>
+        </div>
+
+        <div id="log-panel" className="panel">
+          <h2>실시간 로그 <span>(네모난 카드를 누르면 원본 로그)</span></h2>
+          <LogFeed entries={entries} onOpenEvent={setOpenEvent} />
+        </div>
+      </main>
+
+      <RawModal event={openEvent} onClose={() => setOpenEvent(null)} />
+    </React.Fragment>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+<script>
+  const jsxSource = document.getElementById("app-jsx").textContent;
+  const compiled = Babel.transform(jsxSource, { presets: [["react", { runtime: "classic" }]] }).code;
+  const appScript = document.createElement("script");
+  appScript.textContent = compiled;
+  document.body.appendChild(appScript);
+</script>
+</body>
+</html>

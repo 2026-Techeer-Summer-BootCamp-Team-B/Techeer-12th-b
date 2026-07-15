@@ -1,7 +1,7 @@
 """
 담당: 심다움 (로그 마스터) — ES 색인을 OTel(OTLP) 전송으로 교체
 
-WAF가 탐지한 AttackLog를 Elasticsearch에 직접 색인하던 방식 대신, OpenTelemetry Logs SDK로
+WAF가 탐지한 WafAlert를 Elasticsearch에 직접 색인하던 방식 대신, OpenTelemetry Logs SDK로
 로그 레코드를 만들어 OTLP(HTTP)로 otel-collector에 push한다. Falco(stdout)/K8s Audit(파일)도
 같은 Collector가 tail해서 한 곳(otel-collector)으로 모이므로, 이 파일이 WAF 계층에서
 "중앙 수집"으로 들어가는 유일한 진입점이 된다.
@@ -37,7 +37,7 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.trace import TraceFlags
 
 from app.config import settings
-from app.models.schemas import AttackLog, RiskLevel
+from app.models.schemas import RiskLevel, WafAlert
 
 _logger_module = logging.getLogger(__name__)
 
@@ -121,11 +121,18 @@ _otlp_exporter = OTLPLogExporter(
 _logger_provider.add_log_record_processor(
     BatchLogRecordProcessor(
         _ResilientLogExporter(_otlp_exporter, fallback_path=settings.otel_export_fallback_path),
-        # 기본 max_queue_size(2048)/schedule_delay(5s)로도 대부분은 충분하지만,
-        # 짧은 outage 동안 유실 창을 조금 더 넉넉히 벌려둔다 - 그래도 무한정
-        # 버텨주는 건 아니라서(큐가 꽉 차면 deque가 오래된 항목을 자동으로
-        # 조용히 버림, exporter FAILURE 여부와 별개 문제) 위 fallback 파일이
-        # 실질적인 안전망이다.
+        # [실측 확인, 2026-07-14] schedule_delay_millis 기본값(5000ms)을 그대로 뒀더니
+        # WAF 탐지 시점부터 Kafka에 실제로 나가기까지 이 배치 큐 하나가 최대 5초를
+        # 잡아먹는 게 파이프라인 전체 지연의 90% 이상을 차지하는 걸 otel-collector
+        # 로그로 직접 확인함(이벤트 여러 건이 5초 간격으로 뭉쳐서 나가는 패턴).
+        # 나머지 구간(collector batch/Kafka/normalizer/correlation-engine/Postgres)은
+        # 전부 합쳐도 0.3초 안팎이라, 중앙 otel-collector의 batch.timeout과 동일하게
+        # 500ms로 낮춰서 이 단일 병목을 없앤다.
+        schedule_delay_millis=500,
+        # 기본 max_queue_size(2048)로도 대부분은 충분하지만, 짧은 outage 동안 유실
+        # 창을 조금 더 넉넉히 벌려둔다 - 그래도 무한정 버텨주는 건 아니라서(큐가
+        # 꽉 차면 deque가 오래된 항목을 자동으로 조용히 버림, exporter FAILURE
+        # 여부와 별개 문제) 위 fallback 파일이 실질적인 안전망이다.
         max_queue_size=8192,
     )
 )
@@ -135,16 +142,20 @@ _RETRY_INTERVAL_SECONDS = 60
 
 
 def _to_nanos(dt: datetime) -> int:
-    """naive datetime(AttackLog.timestamp는 datetime.utcnow() 기준)을 UTC로 간주해 ns로 변환."""
+    """naive datetime(WafAlert.timestamp는 datetime.utcnow() 기준)을 UTC로 간주해 ns로 변환."""
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return int(dt.timestamp() * 1_000_000_000)
 
 
-def emit_attack_log(log: AttackLog) -> None:
-    """탐지된 AttackLog 하나를 OTel 로그 레코드로 변환해 Collector로 전송."""
+def emit_waf_alert(log: WafAlert) -> None:
+    """탐지된 WafAlert 하나를 OTel 로그 레코드로 변환해 Collector로 전송."""
     severity_number, severity_text = _RISK_TO_SEVERITY[log.risk_level]
 
+    # observed_timestamp와 body(바로 아래)는 파이프라인 계약 v1.0의
+    # event.id = sha256_hex(observedTimeUnixNano + "|" + body) 해시 입력값이다.
+    # SIEM 정규화 워커가 이 둘을 그대로 가져다 event.id를 계산하므로, 두 값의 계산/직렬화
+    # 방식(타임스탬프 인코딩, JSON 직렬화 등)을 바꿀 땐 반드시 SIEM 쪽 계약도 함께 갱신할 것.
     _logger.emit(
         LogRecord(
             timestamp=_to_nanos(log.timestamp),
@@ -157,6 +168,7 @@ def emit_attack_log(log: AttackLog) -> None:
             trace_flags=TraceFlags(TraceFlags.DEFAULT),
             severity_number=severity_number,
             severity_text=severity_text,
+            resource=_resource,
             body=log.model_dump_json(),
             attributes={
                 "attack_type": log.attack_type.value,
@@ -165,6 +177,7 @@ def emit_attack_log(log: AttackLog) -> None:
                 "target_name": log.target_name or "",
                 "http_method": log.http_method,
                 "matched_rule_id": log.matched_rule_id or "",
+                "matched_rule_name": log.matched_rule_name or "",
                 "mitre_technique_id": log.mitre_technique_id or "",
                 "blocked": log.blocked,
             },
@@ -210,6 +223,7 @@ def _retry_fallback_once() -> None:
                 span_id=0,
                 trace_flags=TraceFlags(TraceFlags.DEFAULT),
                 severity_text=entry.get("severity_text"),
+                resource=_resource,
                 body=entry["body"],
             )
         except (json.JSONDecodeError, KeyError):

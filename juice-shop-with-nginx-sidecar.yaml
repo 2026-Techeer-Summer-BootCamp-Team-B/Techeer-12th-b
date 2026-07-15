@@ -28,10 +28,32 @@ spec:
           image: nginx:1.27-alpine
           ports:
             - containerPort: 8080
+          env:
+            # nginx-conf 템플릿의 ${POD_NAME}/${POD_NAMESPACE}를 시작 시 실제 값으로
+            # 치환하는 데 쓴다(Downward API) - 재배포로 pod 이름이 바뀌어도 이 값은
+            # 항상 그 pod 자신의 실제 이름을 가리킨다.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Downward API가 아니라 배포 시점에 사람이 직접 정하는 값 - 이 타깃의
+            # 이름(IDS-COLLECTOR의 `targets` 테이블에 등록하는 name과 맞출 것,
+            # backend/app/config.py의 TARGET_NAME과 동일 개념). 여러 타깃을
+            # 보호하려면 이 Deployment/Service/ConfigMap 세트를 통째로 복제하고
+            # 이 값만 바꾼다.
+            - name: TARGET_NAME
+              value: "juice-shop"
           volumeMounts:
+            # /etc/nginx/nginx.conf(기본 이미지 제공, 건드리지 않음)가 여기 conf.d를
+            # include하고, 공식 이미지의 entrypoint가 시작 시 이 템플릿을 envsubst로
+            # 렌더링해서 conf.d에 떨궈준다 - juice-shop-nginx-configmap.yaml 참고.
             - name: nginx-conf
-              mountPath: /etc/nginx/nginx.conf
-              subPath: nginx.conf
+              mountPath: /etc/nginx/templates/default.conf.template
+              subPath: default.conf.template
       volumes:
         - name: nginx-conf
           configMap:

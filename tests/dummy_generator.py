@@ -1,112 +1,140 @@
 """
-Juice Shop(WAS)으로 가짜 공격/트래픽 요청을 흘려보내는 더미 생성기.
+IDS-COLLECTOR 상관분석 시나리오(S1~S18, servers/correlation-engine/app/scenarios/*.yaml)를
+바탕으로 실제 공격/정상 트래픽을 만들어내는 더미 생성기.
 
-예전에는 WAF 백엔드의 /proxy/{path}를 거쳐 탐지 엔진이 동작하는지 검증했지만, WAF가
-차단 로직을 걷어내고 로그 전용 구조로 바뀌면서 그 로그 발생지 역할 자체가 Juice Shop 앞단
-nginx-was-logger 사이드카의 WAS 접근 로그로 대체됐다 (WAF 배포는 현재 주석 처리됨, README
-참고). 그래서 이 스크립트도 이제 WAS_URL(Juice Shop Service)로 직접 요청을 보낸다 — 여기
-담긴 페이로드들은 예전 WAF 탐지 시그니처와 매칭되도록 만들어진 것들이라 공격처럼 보이는
-트래픽을 실제 서비스에 흘려보내는 용도로만 남아있고, 지금은 탐지·차단되지 않는다. 확인
-포인트는 "차단됐는지"가 아니라 nginx-was-logger의 access log가 otel-collector를 거쳐
-(`log.source=was`) 실시간으로 찍히는지다.
+이 스크립트는 "가짜 로그"를 직접 만들어 넣지 않는다 - 실제 K8s API 호출(scenarios.py,
+k8s_actions.py)과 실제 HTTP 요청(waf_actions.py, WAF backend 경유)을 수행해서 진짜
+파이프라인(WAF 탐지 로그 / Falco / K8s Audit -> otel-collector -> IDS-COLLECTOR)이
+그대로 반응하게 만드는 방식이다.
 
-Falco/K8s Audit 이벤트는 이 스크립트가 HTTP로 흉내내지 않는다 - stdout/hostPath 로그를
-otel-collector가 직접 tail하므로, 실제 파이프라인을 검증하려면 README에 있는 대로 kubectl로
-진짜 이벤트를 발생시켜야 한다 (예: kubectl run attacker --rm -it --image=ubuntu -- bash -c "cat /etc/shadow").
+CLI 사용:
+    python dummy_generator.py --scenario random --count 3
+    python dummy_generator.py --scenario S4 --count 1 --normal-per-attack 10
+    python dummy_generator.py --auto --interval 10 --per-tick 2   # Ctrl+C로 정지
+
+프론트엔드(dummy_ui/)는 이 파일의 generate()/run_auto()를 그대로 불러써서 실시간
+로그를 스트리밍한다.
+
+환경변수:
+    WAF_URL (기본 http://localhost:8000) - WAF backend, 공격/정상 트래픽 둘 다 이 경로로 감
+    kubeconfig - 기본 위치(~/.kube/config, 현재 컨텍스트) 그대로 사용
+
+로그 확인은 IDS-COLLECTOR(otel-collector -> normalizer -> OpenSearch -> platform-api)에
+왕복 조회하지 않는다 - 두 스택이 별도 네트워크(k3d 클러스터 vs docker-compose)라 그
+경로 자체가 안 이어져 있을 수 있고, 이 프론트엔드가 보여줘야 할 "로그"는 이
+스크립트 자신이 실제로 보낸 요청/받은 응답이므로 waf_actions.py/scenarios.py가 그
+자리에서 바로 yield하는 걸로 충분하다.
 """
-import os
+import argparse
 import random
+import threading
 import time
+from typing import Iterator, Optional
 
-import requests
-from faker import Faker
+import scenarios
+import waf_actions as waf
 
-WAS_URL = os.getenv("WAS_URL", "http://localhost:3000")
-EVENTS_PER_SECOND = int(os.getenv("EVENTS_PER_SECOND", "5"))
-REQUEST_TIMEOUT_SECONDS = 5
-
-fake = Faker()
+DEFAULT_NORMAL_PER_ATTACK = 5
 
 
-# --- 예전 app/detection/signatures.py의 정규식과 매칭되도록 만들어진 페이로드들 ---
-
-def _build_sqli_request():
-    payload = random.choice(["' OR 1=1 --", "1 UNION SELECT username, password FROM users"])
-    return {"method": "POST", "path": "rest/products/search", "json": {"q": payload}}
-
-
-def _build_xss_request():
-    payload = random.choice(["<script>alert(document.cookie)</script>", "<img src=x onerror=alert(1)>"])
-    return {"method": "POST", "path": "api/Feedbacks", "json": {"comment": payload, "rating": 1}}
+def run_normal_traffic(n: int) -> Iterator[str]:
+    if n <= 0:
+        return
+    yield f"  - 정상 트래픽 {n}건 전송"
+    for _ in range(n):
+        yield f"    {waf.send_normal_request()}"
 
 
-def _build_path_traversal_request():
-    payload = random.choice(["../../../../etc/passwd", "%2e%2e%2f%2e%2e%2fetc%2fpasswd"])
-    return {"method": "POST", "path": "rest/user/change-password", "json": {"filename": payload}}
+def _pick_scenario(scenario: str) -> Optional[str]:
+    if scenario.upper() == "RANDOM":
+        return random.choice(scenarios.SCENARIO_IDS)
+    if scenario.upper() in scenarios.SCENARIOS:
+        return scenario.upper()
+    return None
 
 
-def _build_os_command_injection_request():
-    payload = random.choice(["; cat /etc/passwd", "| whoami"])
-    return {"method": "POST", "path": "rest/admin/application-version", "json": {"cmd": payload}}
+def generate(
+    scenario: Optional[str] = None,
+    count: int = 1,
+    normal_per_attack: int = DEFAULT_NORMAL_PER_ATTACK,
+) -> Iterator[str]:
+    """scenario가 None/"random"이면 매 회차 무작위 시나리오, 특정 ID(예: "S4")면 그
+    시나리오만 count번 반복한다. normal_per_attack은 공격 1건당 같이 섞어 보낼 정상
+    트래픽 개수(0이면 정상 트래픽 없음) - "공격 : 정상" 비율을 여기서 조절한다."""
+    count = max(1, min(count, 50))
+    scenario = scenario or "random"
+
+    for i in range(1, count + 1):
+        chosen = _pick_scenario(scenario)
+        if chosen is None:
+            yield f"[{i}/{count}] 알 수 없는 시나리오: {scenario} (사용 가능: {', '.join(scenarios.SCENARIO_IDS)})"
+            return
+
+        info = scenarios.SCENARIOS[chosen]
+        yield f"[{i}/{count}] {chosen} - {info['name']} (모듈: {'/'.join(info['modules'])})"
+        yield f"  스토리: {info['story']}"
+        try:
+            yield from info["run"]()
+        except scenarios.k8s.K8sUnavailable as e:
+            yield f"  K8s 접근 불가로 중단: {e}"
+        except Exception as e:
+            yield f"  예상치 못한 오류: {e}"
+
+        yield from run_normal_traffic(normal_per_attack)
+        yield f"[{i}/{count}] 완료\n"
 
 
-def _build_jwt_forgery_request():
-    import base64
-    import json
+def run_auto(
+    scenario: Optional[str],
+    attacks_per_tick: int,
+    interval_seconds: float,
+    normal_per_attack: int,
+    stop_event: threading.Event,
+) -> Iterator[str]:
+    """stop_event가 set될 때까지 interval_seconds마다 attacks_per_tick개의 공격(+정상
+    트래픽)을 반복 실행한다. tick 사이 대기는 0.5초 단위로 쪼개서 정지 요청에 바로
+    반응하도록 한다(interval이 길어도 정지 버튼이 몇 분씩 안 먹는 일이 없게)."""
+    interval_seconds = max(1.0, interval_seconds)
+    attacks_per_tick = max(1, min(attacks_per_tick, 20))
+    tick = 0
 
-    header_b64 = base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode()).decode().rstrip("=")
-    payload_b64 = base64.urlsafe_b64encode(
-        json.dumps({"sub": fake.user_name(), "admin": True}).encode()
-    ).decode().rstrip("=")
-    token = f"{header_b64}.{payload_b64}."
-    return {"method": "GET", "path": "rest/user/whoami", "headers": {"Authorization": f"Bearer {token}"}}
+    while not stop_event.is_set():
+        tick += 1
+        yield f"=== 자동 실행 tick {tick}: {attacks_per_tick}개 공격, {interval_seconds}초 주기 ==="
+        yield from generate(scenario, attacks_per_tick, normal_per_attack)
 
+        if stop_event.is_set():
+            break
+        waited = 0.0
+        while waited < interval_seconds and not stop_event.is_set():
+            step = min(0.5, interval_seconds - waited)
+            time.sleep(step)
+            waited += step
 
-REQUEST_BUILDERS = [
-    _build_sqli_request,
-    _build_xss_request,
-    _build_path_traversal_request,
-    _build_os_command_injection_request,
-    _build_jwt_forgery_request,
-]
-
-
-def send_was_event():
-    """Juice Shop(WAS)에 직접 요청을 보낸다 (nginx-was-logger의 access log 트리거)."""
-    request_spec = random.choice(REQUEST_BUILDERS)()
-    url = f"{WAS_URL}/{request_spec['path']}"
-    try:
-        response = requests.request(
-            method=request_spec.get("method", "GET"),
-            url=url,
-            params=request_spec.get("params"),
-            json=request_spec.get("json"),
-            headers=request_spec.get("headers"),
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-        print(f"[WAS] {request_spec.get('method', 'GET')} /{request_spec['path']} -> {response.status_code}")
-    except requests.RequestException as e:
-        print(f"[WAS] Error sending request: {e}")
+    yield f"=== 자동 실행 정지됨 (총 {tick} tick 실행) ==="
 
 
-def main():
-    print(f"Starting dummy event generator against WAS: {WAS_URL}")
-    print(f"Generating {EVENTS_PER_SECOND} events per second...")
+def _cli() -> None:
+    parser = argparse.ArgumentParser(description="IDS-COLLECTOR 상관분석 시나리오 더미 생성기")
+    parser.add_argument("--scenario", default="random", help=f"시나리오 ID(예: S4) 또는 random. 사용 가능: {', '.join(scenarios.SCENARIO_IDS)}")
+    parser.add_argument("--count", type=int, default=1, help="반복 횟수 (기본 1, --auto와 같이 안 씀)")
+    parser.add_argument("--normal-per-attack", type=int, default=DEFAULT_NORMAL_PER_ATTACK, help="공격 1건당 정상 트래픽 개수 (기본 5, 0이면 없음)")
+    parser.add_argument("--auto", action="store_true", help="자동 반복 모드 (Ctrl+C로 정지)")
+    parser.add_argument("--interval", type=float, default=10.0, help="자동 모드 tick 간격(초, 기본 10)")
+    parser.add_argument("--per-tick", type=int, default=1, help="자동 모드 tick당 공격 수 (기본 1)")
+    args = parser.parse_args()
 
-    event_counter = 0
-    start_time = time.time()
-
-    while True:
-        if event_counter >= EVENTS_PER_SECOND:
-            elapsed_time = time.time() - start_time
-            if elapsed_time < 1.0:
-                time.sleep(1.0 - elapsed_time)
-            event_counter = 0
-            start_time = time.time()
-
-        send_was_event()
-        event_counter += 1
+    if args.auto:
+        stop_event = threading.Event()
+        try:
+            for line in run_auto(args.scenario, args.per_tick, args.interval, args.normal_per_attack, stop_event):
+                print(line)
+        except KeyboardInterrupt:
+            print("\n정지 요청됨 - 종료합니다.")
+    else:
+        for line in generate(args.scenario, args.count, args.normal_per_attack):
+            print(line)
 
 
 if __name__ == "__main__":
-    main()
+    _cli()

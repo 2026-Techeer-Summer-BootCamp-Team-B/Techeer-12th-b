@@ -1,72 +1,68 @@
 # WAF 게이트웨이(이 리포지토리의 backend/) 배포 매니페스트.
 #
-# 비활성화됨 (주석 처리) — WAF가 차단을 하지 않고 로그만 남기는 구조로 바뀌면서, 그 로그
-# 발생지 역할이 Juice Shop 쪽 WAS 로그(nginx-was-logger 사이드카, juice-shop-with-nginx-sidecar.yaml)
-# 와 사실상 중복되어 WAS 쪽으로 완전히 대체했다. 코드/매니페스트는 지우지 않고 남겨둔다 —
-# 나중에 다시 WAF 계층이 필요해지면 아래 전체를 주석 해제하고, otel-collector-config.yaml의
-# otlp 리시버 + logs/waf 파이프라인도 함께 되살리면 된다.
+# 다시 활성화됨 — WAF 계층(탐지·로그만, 차단은 WAS 책임)을 다시 배포한다.
+# otel-collector-config.yaml의 otlp 리시버 + logs/waf 파이프라인도 함께 되살렸다.
 #
 # 사용법 (저장소 루트에서, backend/Dockerfile로 이미지를 먼저 빌드해 k3d에 주입한 뒤):
 #   docker build -t techeer-waf-backend:latest backend/
 #   k3d image import techeer-waf-backend:latest -c techeer-ids
 #   kubectl apply -f backend/backend-deployment.yaml
-#
-# apiVersion: apps/v1
-# kind: Deployment
-# metadata:
-#   name: backend
-# spec:
-#   replicas: 1
-#   selector:
-#     matchLabels:
-#       app: backend
-#   template:
-#     metadata:
-#       labels:
-#         app: backend
-#     spec:
-#       containers:
-#         - name: backend
-#           image: techeer-waf-backend:latest
-#           imagePullPolicy: IfNotPresent
-#           ports:
-#             - containerPort: 8000
-#           env:
-#             - name: TARGET_SERVICE_URL
-#               value: "http://juice-shop:3000"
-#             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-#               value: "http://otel-collector:4318"
-#             # app/otel/logger.py의 OTel export 실패 fallback 파일 경로 - 아래
-#             # emptyDir 볼륨에 둬서 컨테이너가 재시작돼도(파드 자체가 재스케줄되지
-#             # 않는 한) 같이 사라지지 않게 한다. /tmp(컨테이너 쓰기 레이어)에
-#             # 두면 컨테이너 재시작만으로도 유실될 수 있어서 별도 볼륨으로 뺐다.
-#             - name: OTEL_EXPORT_FALLBACK_PATH
-#               value: "/var/lib/waf-otel-fallback/fallback.jsonl"
-#           volumeMounts:
-#             - name: otel-fallback
-#               mountPath: /var/lib/waf-otel-fallback
-#           readinessProbe:
-#             httpGet:
-#               path: /health
-#               port: 8000
-#             initialDelaySeconds: 3
-#             periodSeconds: 5
-#       volumes:
-#         # emptyDir이라 파드 자체가 삭제/재스케줄되면 이것도 같이 사라진다 -
-#         # 완전한 영속성이 필요하면 PersistentVolumeClaim으로 바꿀 것. 지금은
-#         # "컨테이너 재시작 정도는 버틴다"는 수준의 절충안.
-#         - name: otel-fallback
-#           emptyDir: {}
-# ---
-# apiVersion: v1
-# kind: Service
-# metadata:
-#   name: backend
-# spec:
-#   selector:
-#     app: backend
-#   ports:
-#     - port: 8000
-#       targetPort: 8000
-#   # 로컬에서 dummy_generator.py 등으로 붙어서 테스트하려면
-#   # kubectl port-forward svc/backend 8000:8000 사용
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          image: techeer-waf-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: TARGET_SERVICE_URL
+              value: "http://juice-shop:3000"
+            # juice-shop-with-nginx-sidecar.yaml의 TARGET_NAME과 반드시 같은 값으로
+            # 맞출 것 - IDS-COLLECTOR가 WAF/WAS 이벤트를 같은 타깃으로 묶는 기준이다
+            # (app/config.py 참고).
+            - name: TARGET_NAME
+              value: "juice-shop"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector:4318"
+            # kubectl port-forward는 kubelet이 pod의 네트워크 네임스페이스 안에서
+            # 로컬 프록시로 연결하는 방식이라, pod 입장에서 direct 연결 IP가 항상
+            # 127.0.0.1로 보인다. 이 값이 없으면 tests/dummy_generator.py가 보내는
+            # X-Forwarded-For(가짜 IP 다양화, waf_actions.py 참고)가 proxy.py의
+            # get_client_ip()에서 전부 무시돼 WafAlert.source_ip가 매번 127.0.0.1로만
+            # 남는다. 운영 배포(Traefik 뒤)로 바뀌면 이 값을 Traefik의 실제 IP로
+            # 바꿔야 한다 - 127.0.0.1은 로컬 port-forward 테스트 전용.
+            - name: TRUSTED_PROXIES_RAW
+              value: "127.0.0.1"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+spec:
+  selector:
+    app: backend
+  ports:
+    - port: 8000
+      targetPort: 8000
+  # 로컬에서 dummy_generator.py 등으로 붙어서 테스트하려면
+  # kubectl port-forward svc/backend 8000:8000 사용

@@ -1,16 +1,17 @@
-# OTel Collector 설정 (ConfigMap으로 배포). 3계층 로그를 한 곳에서 "중앙 수집"해서
+# OTel Collector 설정 (ConfigMap으로 배포). 4계층 로그를 한 곳에서 "중앙 수집"해서
 # 단일 OTLP(gRPC) 익스포터로 Central SIEM(Otel Gateway)에 보내는 게 이 Collector의 역할이다.
 #
 #   ① 관문(WAS)     : Juice Shop 앞단 nginx-was-logger 사이드카가 stdout에 남기는 JSON
 #                      access log를 filelog로 tail (juice-shop-nginx-configmap.yaml 참고)
+#   ① 관문(WAF)     : FastAPI WAF 백엔드(backend/)가 OTel SDK로 직접 OTLP push하는 로그
+#                      (log.source=waf, 탐지·로그 전용 — 차단은 WAS 책임)
 #   ② 내부 런타임(Falco): Falco 파드의 stdout(json_output) 로그 파일을 filelog로 tail
 #   ③ 제어판(K8s Audit) : kube-apiserver가 남긴 audit.log 파일을 filelog로 tail
 #
-# 예전에는 ①을 FastAPI WAF 백엔드(backend/)가 OTel SDK로 직접 OTLP push하는 방식으로
-# 수집했다. WAF가 하던 차단 로직이 전부 사라지고 로그 발생지 역할만 남으면서, 그 역할이
-# Juice Shop 쪽 WAS 로그(nginx-was-logger)와 사실상 중복돼 WAS 쪽으로 완전히 대체했다.
-# WAF 백엔드 코드/배포 매니페스트는 지우지 않고 주석 처리만 해뒀다 (backend/backend-deployment.yaml,
-# 아래 otlp 리시버·logs/waf 파이프라인) — 나중에 다시 필요해지면 주석만 풀면 된다.
+# 4계층 모두 json_parser 등으로 필드를 뽑아 우리 쪽 스키마에 맞게 규격화하지 않는다.
+# 각 소스가 원래 만들어내는 로그 원본을 body에 그대로 실어서(container 오퍼레이터로 CRI
+# 래핑만 벗겨냄) resource["log.source"]만 태깅한 뒤 OTLP(gRPC) exporter로 그대로
+# 전달한다 - 파싱/정규화는 로그를 받는 분석 서버 쪽 책임으로 남겨둔다.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -18,32 +19,29 @@ metadata:
 data:
   config.yaml: |
     receivers:
-      # ① 관문(WAS) - Juice Shop 옆 nginx-was-logger 사이드카의 stdout access log를 tail
+      # ① 관문(WAS) - Juice Shop 옆 nginx-was-logger 사이드카의 stdout access log를 tail.
+      # 필드를 파싱해서 스키마를 강제하지 않고, nginx가 남긴 JSON 한 줄을 body에 원본
+      # 그대로 실어서 보낸다 (규격화는 분석 서버 쪽 책임).
       filelog/was:
         include:
           - /var/log/pods/default_juice-shop-*/nginx-was-logger/*.log
         include_file_path: true
         start_at: end
         operators:
-          # Falco와 마찬가지로 containerd/CRI 로그 포맷을 먼저 벗겨내고
+          # containerd/CRI 로그 포맷(타임스탬프+스트림+P/F 태그) 껍데기만 벗겨내서
+          # body를 nginx가 실제로 남긴 원본 로그 라인으로 되돌린다 - 내용 파싱은 하지 않는다.
           - type: container
-          # 그 안의 body(JSON 한 줄)를 실제 속성으로 파싱
-          - type: json_parser
-            timestamp:
-              parse_from: attributes.time
-              layout: "%Y-%m-%dT%H:%M:%S%z"
           - type: add
             field: resource["log.source"]
             value: "was"
 
-      # (비활성화됨 - 주석 처리) 예전 ① 관문(WAF) - backend Pod가 OTel SDK로 직접 push하던 경로.
-      # WAF 백엔드를 다시 배포해서 쓰게 되면 아래 주석을 풀고 logs/waf 파이프라인도 함께 살릴 것.
-      # otlp:
-      #   protocols:
-      #     grpc:
-      #       endpoint: 0.0.0.0:4317
-      #     http:
-      #       endpoint: 0.0.0.0:4318
+      # ① 관문(WAF) - backend Pod가 OTel SDK로 직접 push하는 경로 (app/otel/logger.py 참고)
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
 
       # ② 내부 런타임(Falco) - 컨테이너 stdout 로그 파일(CRI 포맷)을 tail
       filelog/falco:
@@ -61,15 +59,13 @@ data:
 
       # ③ 제어판(K8s Audit) - kube-apiserver가 남긴 JSON 감사 로그를 tail
       # (k3d-audit-policy.yaml 정책에 따라 비정상 API 호출 / RBAC 과다 요청 / SA 탈취 시도 위주로 기록됨)
+      # 여기서도 필드를 뽑아 스키마를 입히지 않고, kube-apiserver가 남긴 JSON 한 줄을
+      # body에 원본 그대로 실어서 보낸다.
       filelog/k8s_audit:
         include:
           - /var/log/kubernetes/audit/audit*.log
         start_at: beginning
         operators:
-          - type: json_parser
-            timestamp:
-              parse_from: attributes.stageTimestamp
-              layout: "%Y-%m-%dT%H:%M:%S.%fZ"
           - type: add
             field: resource["log.source"]
             value: "k8s-audit"
@@ -99,10 +95,10 @@ data:
           receivers: [filelog/was]
           processors: [batch]
           exporters: [debug, otlp]
-        # (비활성화됨 - 주석 처리) logs/waf:
-        #   receivers: [otlp]
-        #   processors: [batch]
-        #   exporters: [debug, otlp]
+        logs/waf:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [debug, otlp]
         logs/falco:
           receivers: [filelog/falco]
           processors: [batch]

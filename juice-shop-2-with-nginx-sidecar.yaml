@@ -1,0 +1,61 @@
+# juice-shop-with-nginx-sidecar.yaml의 복제본 - 두 번째 보호 대상 타깃("juice-shop-2")
+# 을 실제로 띄워서 "targets 테이블을 여러 개 등록하면 WAF backend+WAS 세트를
+# 통째로 복제 배포한다"는 설계를 실증한다(README/Notion "데이터베이스" 페이지
+# 참고). 원본과 다른 건 name들(juice-shop-2)과 TARGET_NAME 값뿐이다.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: juice-shop-2
+  labels:
+    app: juice-shop-2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: juice-shop-2
+  template:
+    metadata:
+      labels:
+        app: juice-shop-2
+    spec:
+      containers:
+        - name: juice-shop
+          image: bkimminich/juice-shop
+          ports:
+            - containerPort: 3000
+
+        - name: nginx-was-logger
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 8080
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # 원본과 유일하게 다른 값 - 이 타깃의 이름.
+            - name: TARGET_NAME
+              value: "juice-shop-2"
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/templates/default.conf.template
+              subPath: default.conf.template
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: juice-shop-2-nginx-conf
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: juice-shop-2
+spec:
+  selector:
+    app: juice-shop-2
+  ports:
+    - port: 3000
+      targetPort: 8080
