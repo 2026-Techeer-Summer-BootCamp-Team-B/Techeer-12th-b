@@ -17,6 +17,14 @@ data:
   default.conf.template: |
     # Juice Shop 앞단에서 요청/응답을 그대로 통과시키면서 access log만 남기는 설정.
     # WAF처럼 차단하는 게 아니라, "요청이 있었다"는 사실만 stdout에 기록하는 게 목적.
+    #
+    # JSON 키 "referrer"는 일부러 HTTP 헤더 이름(Referer, r 하나)이 아니라 ECS 필드
+    # 표기(referrer, r 두 개)를 그대로 썼다 - IDS-COLLECTOR의 normalize_was()가
+    # payload.get("referrer")로 읽어서 event.http.request.referrer(ECS)에 매핑하기
+    # 때문. 예전엔 이 키가 "referer"였는데 normalizer가 안 읽는 이름이라 모든 WAS
+    # 이벤트의 referrer가 실제 Referer 헤더 값과 무관하게 항상 비어 있었다(2026-07-15
+    # 발견, 스키마 드리프트) - 이 필드명을 다시 "referer"로 되돌리려면
+    # normalize_was()도 같이 고쳐야 한다.
     log_format was_json escape=json
       '{'
         '"time":"$time_iso8601",'
@@ -29,18 +37,35 @@ data:
         '"body_bytes_sent":$body_bytes_sent,'
         '"request_time":$request_time,'
         '"user_agent":"$http_user_agent",'
-        '"referer":"$http_referer",'
+        '"referrer":"$http_referer",'
         '"x_forwarded_for":"$http_x_forwarded_for",'
         '"orchestrator_namespace":"${POD_NAMESPACE}",'
         '"orchestrator_pod":"${POD_NAME}",'
         '"target_name":"${TARGET_NAME}"'
       '}';
 
-    access_log /dev/stdout was_json;
     error_log /dev/stderr warn;
 
     server {
       listen 8080;
+
+      # nginx:alpine 베이스 이미지의 nginx.conf가 http 컨텍스트에 기본
+      # `access_log /var/log/nginx/access.log main;`을 이미 물려주고 있고, 그 파일은
+      # 공식 이미지 빌드 단계에서 /dev/stdout으로 심링크돼 있다 - http 레벨에
+      # was_json access_log를 나란히 추가만 하면(형제 지시문) 둘 다 누적 적용되어
+      # 매 요청마다 stdout에 줄이 2개(우리 JSON + nginx 기본 combined 포맷 평문)
+      # 찍힌다. otel-collector의 filelog/was가 파싱 없이 원본 그대로 넘기므로,
+      # 평문 줄은 normalizer에서 JSON 파싱에 실패해 event.original이
+      # {"raw": "..."}로만 남고 status를 못 읽어 실제로는 200이어도
+      # event.outcome이 "failure"로 찍히는 반쪽짜리 로그가 요청마다 하나씩 더
+      # 생겼다(2026-07-15, 대시보드에서 "로그 표시가 이상하다"로 보고된 원인 -
+      # 실측 확인). http 레벨에서 `access_log off;`로 지웠더니 이번엔 같은 레벨의
+      # was_json 지시문까지 통째로 취소돼서(nginx 문서: off는 "현재 레벨의 모든
+      # access_log 지시문을 취소") 로그가 아예 안 나가는 걸 실측으로 발견 - off는
+      # 답이 아니다. 대신 was_json access_log를 이 server 블록 안으로 옮겨서
+      # 자식 컨텍스트가 부모(http)의 지시문을 자동으로 대체(추가가 아니라 교체)하게
+      # 한다 - nginx 컨텍스트 상속의 표준 동작이라 off 트릭 자체가 필요 없다.
+      access_log /dev/stdout was_json;
 
       location / {
         # 같은 Pod 안의 juice-shop 컨테이너로 그대로 전달 (localhost로 접근 가능)

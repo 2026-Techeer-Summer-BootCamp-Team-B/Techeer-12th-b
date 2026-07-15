@@ -31,6 +31,30 @@ data:
           # containerd/CRI 로그 포맷(타임스탬프+스트림+P/F 태그) 껍데기만 벗겨내서
           # body를 nginx가 실제로 남긴 원본 로그 라인으로 되돌린다 - 내용 파싱은 하지 않는다.
           - type: container
+          # nginx-was-logger 컨테이너의 stdout/stderr에는 was_json access log 말고도
+          # 잡음이 두 종류 더 섞여 나온다 - (1) nginx 마스터 프로세스의 운영 메시지
+          # ("start worker process"/"worker process N exited with code 0"/"signal 17
+          # (SIGCHLD) received", error_log 설정대로 stderr로 감), (2) nginx 공식
+          # 이미지의 docker-entrypoint.sh와 /docker-entrypoint.d/*.sh 부팅 스크립트가
+          # 찍는 안내 문구("Sourcing ...", "Launching ...", "Enabled listen on IPv6..."
+          # 등, 이건 stdout으로 감 - 처음엔 stderr만 필터링하면 될 줄 알았는데 이
+          # 것들이 stdout이라 실측으로 통과되는 걸 확인했다, 2026-07-15). 즉 스트림
+          # (stdout/stderr) 기준 필터로는 두 잡음을 동시에 못 잡는다 - CRI가 같은
+          # 파드/컨테이너의 stdout·stderr를 한 로그 파일에 같이 적재하고, 이 필터가
+          # 없으면 container 오퍼레이터가 이 잡음 전부를 그대로 통과시켜서
+          # log.source=was로 태깅된다. normalizer는 JSON이 아닌 이 줄들을
+          # {"raw": "..."} 폴백 + event.outcome=failure + orchestrator=unknown인
+          # 가짜 WAS 이벤트로 만든다 - 실측 확인 결과 이 필터를 넣기 전 기준
+          # attack-logs-*의 event.module=was 문서 중 13%(4860건 중 633건)가 이
+          # 잡음이었다(2026-07-15, "더미 생성기로 WAS를 생성해도 IDS-COLLECTOR에
+          # 안 잡히던" 증상의 실제 원인 - 요청 자체가 유실된 게 아니라 진짜 이벤트
+          # 사이에 이런 잡음이 섞여 대시보드에서 알아보기 어려웠던 것). 스트림
+          # 대신 "내용이 JSON인가"로 걸러야 두 잡음을 한 번에 잡는다 - was_json
+          # log_format은 항상 `{`로 시작하는 한 줄짜리 JSON을 찍으므로, `{`로
+          # 시작하지 않는 줄은 전부 access log가 아니라고 보고 버린다(filter
+          # 오퍼레이터는 expr이 참인 엔트리를 버린다).
+          - type: filter
+            expr: 'type(body) != "string" or !(body matches "^\\{")'
           - type: add
             field: resource["log.source"]
             value: "was"
