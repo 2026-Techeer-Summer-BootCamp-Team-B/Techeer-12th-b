@@ -46,6 +46,17 @@ class Settings(BaseSettings):
     brute_force_max_failures: int = 5
     brute_force_window_seconds: int = 300
 
+    # User-Agent 로테이션 탐지 설정 (2026-07-18, S28 보강 재료)
+    # 근거: OWASP ZAP의 실제 active scan을 돌려서 확인한 결과, ZAP은 매 요청마다
+    # Chrome/Firefox/Yahoo Slurp/msnbot 등으로 User-Agent를 계속 바꿔가며 자신을
+    # 숨긴다 - BAD_BOT_USER_AGENTS 문자열 매칭(S28)은 sqlmap/nikto처럼 "정직하게
+    # 자기 정체를 밝히는" 구식 CLI 툴만 잡을 수 있고, 이런 회피형 스캐너는
+    # 원천적으로 못 잡는 구조적 한계가 있었다. "짧은 시간에 같은 IP가 서로 다른
+    # User-Agent를 여러 개 쓴다"는 행위 자체(정상 브라우저는 세션 내내 UA가
+    # 고정됨)를 신호로 삼아 UA 문자열 내용과 무관하게 탐지한다.
+    ua_rotation_window_seconds: int = 60
+    ua_rotation_distinct_threshold: int = 4
+
     # CORS 허용 도메인 (담당: 이용욱)
     # 콤마로 구분해서 .env에 넣으면 됨 (예: "http://localhost:5173,https://우리도메인.com")
     # 절대 "*"로 두지 말 것 — 인증정보(쿠키/토큰)를 쓰는 API에서 와일드카드는

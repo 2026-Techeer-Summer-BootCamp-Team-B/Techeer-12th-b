@@ -58,6 +58,7 @@ class AttackType(str, Enum):
     BRUTE_FORCE = "brute_force"
     BAD_BOT = "bad_bot"                        # 알려진 해킹 툴/스캐너 User-Agent
     RATE_LIMIT_ABUSE = "rate_limit_abuse"       # 짧은 시간 내 과다 요청
+    UA_ROTATION = "ua_rotation"                 # 짧은 시간에 같은 IP가 User-Agent를 여러 개 바꿔씀(핑거프린팅 회피 정황)
 
 
 class RiskLevel(str, Enum):
