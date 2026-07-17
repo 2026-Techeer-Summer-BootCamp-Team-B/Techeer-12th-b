@@ -182,7 +182,7 @@ def exec_in_pod(namespace: str, name: str, command: List[str], container: Option
         stderr=True,
         stdin=False,
         stdout=True,
-        tty=False,
+        tty=True,
     )
 
 

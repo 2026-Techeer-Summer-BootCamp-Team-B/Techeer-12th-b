@@ -45,6 +45,8 @@ customRules:
   rules-severity-overrides.yaml: |-
     - rule: Terminal shell in container
       priority: WARNING
+      override:
+        priority: replace
 
   rules-cryptomining.yaml: |-
     - list: miner_ports

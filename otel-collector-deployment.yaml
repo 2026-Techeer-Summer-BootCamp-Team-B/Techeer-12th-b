@@ -31,31 +31,21 @@ spec:
           args:
             - --config=/etc/otelcol-contrib/config.yaml
           env:
-            # host.docker.internal 경유는 버렸다 - k3d 노드(Docker Desktop VM 위 컨테이너)에서
-            # 나가서 호스트로 갔다가 docker-proxy를 거쳐 다시 컨테이너로 들어오는 중첩 NAT
-            # 경로인데, 이 경로에서 gRPC(h2c) 핸드셰이크가 preface 단계에서 깨지는 문제가
-            # 있었다 ("error reading server preface: EOF"). TCP connect는 되는데 HTTP/2
-            # 핸드셰이크만 실패하는 걸 보면 vpnkit(Docker Desktop의 유저스페이스 NAT 프록시)
-            # 쪽 문제로 보임.
+            # Central SIEM이 이 수신 포트 앞단에 TLS 종단 + mTLS(클라이언트 인증서 필수
+            # 검증)를 두면서 접속 대상을 공인 도메인으로 바꿨다. 예전엔 컨테이너 이름
+            # (traefik:4317, siem-net 공유 네트워크로 직접 붙여서 resolve)을 썼지만,
+            # 서버 인증서(Let's Encrypt)가 이 공인 도메인 앞으로만 발급돼 있어서 TLS
+            # 핸드셰이크의 인증서 호스트명 검증 단계에서 "traefik"이라는 이름 자체가
+            # 인증서에 없는 이름이라 거부된다 - TCP 연결 자체는 siem-net으로도 여전히
+            # 되지만 TLS 레벨에서 막히므로 의미가 없다. 그래서 siem-net에 k3d 노드를
+            # 직접 붙이는 워크어라운드(docker network connect ...)는 이 엔드포인트
+            # 목적으로는 더 이상 필요 없다 - 공인 도메인으로 나가면 Traefik의 TLS 종단
+            # 리스너가 받아준다.
             #
-            # 어차피 k3d 노드도 IDS-COLLECTOR의 docker-compose 컨테이너들도 같은 Docker
-            # Desktop VM 위의 형제 컨테이너라 host.docker.internal로 나갔다 들어올 이유가
-            # 없다. 대신 k3d 노드 컨테이너 3개(server-0/agent-0/agent-1) 전부를
-            # IDS-COLLECTOR가 쓰는 공유 네트워크 siem-net에 직접 붙인다:
-            #   docker network connect siem-net k3d-techeer-ids-server-0
-            #   docker network connect siem-net k3d-techeer-ids-agent-0
-            #   docker network connect siem-net k3d-techeer-ids-agent-1
-            #
-            # 붙이고 나면 이 파드도 Docker 내장 DNS로 siem-net 위의 컨테이너 이름을 그대로
-            # resolve할 수 있다 - IP를 하드코딩해서 컨테이너 재생성마다 갱신할 필요가 없다.
-            #
-            # gRPC(4317)는 otel-collector 컨테이너가 직접 물고 있지 않고 Traefik의
-            # otlp-grpc 엔트리포인트로만 받는다 (h2c preface를 HTTP/1.1로 오인하는 문제를
-            # Traefik v3 + loadbalancer.server.scheme=h2c 조합으로 해결해 둔 경로 - IDS-COLLECTOR의
-            # servers/otel/docker-compose.yml, servers/proxy/traefik/traefik.yml 참고).
-            # 그래서 otel-collector가 아니라 반드시 traefik 컨테이너를 목적지로 잡아야 한다.
+            # 클라이언트 인증서는 volumeMounts의 otel-client-cert(아래) 참고. exporter
+            # TLS 설정은 otel-collector-config.yaml의 exporters.otlp.tls에 있다.
             - name: CENTRAL_SIEM_OTLP_ENDPOINT
-              value: "traefik:4317"
+              value: "35-216-79-173.sslip.io:4317"
           ports:
             - containerPort: 4317
               name: otlp-grpc
@@ -71,6 +61,15 @@ spec:
             - name: k8s-audit-logs
               mountPath: /var/log/kubernetes/audit
               readOnly: true
+            # Central SIEM으로 나가는 gRPC exporter가 mTLS로 제시할 클라이언트 인증서.
+            # Secret은 이 매니페스트로 만들지 않는다 - 인증서/개인키 바이트를 git이나
+            # 매니페스트에 남기지 않기 위해 배포 시점에 별도로 생성한다:
+            #   kubectl create secret generic otel-client-cert \
+            #     --from-file=client.crt=<식별자>-client.crt \
+            #     --from-file=client.key=<식별자>-client.key
+            - name: otel-client-cert
+              mountPath: /etc/otel/client-certs
+              readOnly: true
       volumes:
         - name: config
           configMap:
@@ -83,6 +82,16 @@ spec:
           hostPath:
             path: /var/log/kubernetes/audit
             type: DirectoryOrCreate
+        # optional을 안 주면 기본값은 false(필수)다 - 일부러 그대로 둔다. 인증서가
+        # 없으면 어차피 Central SIEM으로 나가는 모든 export가 TLS 핸드셰이크부터
+        # 실패해서 로그가 전부 유실되는데, 그 상태로 파드가 "정상 Running"으로 조용히
+        # 뜨는 것보다는 Secret이 없으면 ContainerCreating에 멈춰서 kubectl get pods로
+        # 바로 눈에 띄는 쪽이 낫다. optional: true로 바꾸면 Secret 없이도 뜨긴 하지만,
+        # 그 경우 WAS/Falco/K8s Audit 로그가 조용히 안 나가는 상태를 아무도 못 알아채는
+        # 채로 방치될 위험이 더 크다고 판단했다.
+        - name: otel-client-cert
+          secret:
+            secretName: otel-client-cert
 ---
 apiVersion: v1
 kind: Service
