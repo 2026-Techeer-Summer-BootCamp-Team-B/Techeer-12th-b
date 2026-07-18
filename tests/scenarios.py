@@ -1,5 +1,5 @@
 """
-IDS-COLLECTOR/servers/correlation-engine/app/scenarios/*.yaml의 S1~S58 상관분석
+IDS-COLLECTOR/servers/correlation-engine/app/scenarios/*.yaml의 S1~S59 상관분석
 시나리오를 실제로 발화시키는 레시피 모음. 각 레시피는 로그 문자열을 하나씩 yield하는
 제너레이터라 프론트엔드(dummy_ui)가 "지금 뭘 하고 있는지"를 실시간으로 보여줄 수 있다.
 
@@ -993,6 +993,88 @@ def _run_s58() -> Iterator[str]:
     yield from _step(f"{sa_name} 정리", lambda: k8s.delete_service_account(k8s.DUMMY_NAMESPACE, sa_name))
 
 
+# S59(2026-07-19)용 - S5와 같은 exec 명령이지만 container="juice-shop"(distroless,
+# 셸 없음)이 아니라 container="nginx-was-logger"(실제 셸 있음, 실측 확인)를 쓴다 -
+# S5는 이 한계 때문에 stage2가 사실상 재현 안 되는 걸 알면서도 그대로 둔 시나리오였고
+# (해당 함수 docstring 참고), S59는 처음부터 셸이 있는 사이드카를 골라 실제로
+# 재현되게 한다.
+_S59_STAGE2_EXEC_COMMANDS = [
+    "wget -qO- --no-check-certificate https://kubernetes.default.svc/version || true",
+    "wget -qO- --no-check-certificate https://kubernetes.default.svc/api || true",
+]
+
+
+def _run_s59() -> Iterator[str]:
+    """S59: 공개 웹앱 공격(WAF) -> 컨테이너 발판 확보(Falco, 시뮬레이션) -> SA 토큰
+    탈취(Falco, S56 재료) -> 그 신원으로 실제 K8s API 호출(k8s_audit, S25 재료) ->
+    같은 신원으로 cluster-admin 권한상승 시도(k8s_audit, S13 재료)까지 5단계 -
+    network.yaml S59 주석 참고. join_on=user_or_sa - stage1~3(waf/falco)은
+    enrichment.py가 대상 pod(juice-shop)에 정적으로 매핑해둔 actor_identity로,
+    stage4~5(k8s_audit)는 훔친 토큰으로 실제 인증된 user_name으로 join되는데 둘 다
+    system:serviceaccount:default:default라 자연히 이어진다.
+
+    ⚠️ stage1->stage2는 S5와 같은 시뮬레이션 한계(Juice Shop엔 실제 RCE가 없어
+    WAF 공격이 진짜로 컨테이너 침투를 유발하지 않음, 그래서 이 스크립트가 두 신호를
+    같은 타이밍에 각각 만들어준다) - stage3부터는 진짜 인과관계다(실제로 훔친
+    토큰을 실제로 사용)."""
+    real_pod = None
+    try:
+        real_pod = k8s.find_juice_shop_pod()
+    except Exception as e:
+        yield f"  - Juice Shop pod 조회 실패: {e}"
+    if not real_pod:
+        yield "  - Juice Shop pod을 못 찾음(default 네임스페이스에 app=juice-shop 라벨 pod 필요) - 스킵"
+        return
+
+    yield "  - stage1: WAF CRITICAL 공격 전송(공개 웹앱 익스플로잇 흉내)"
+    yield f"    {waf.send_random_injection_critical_attack()}"
+    time.sleep(2)
+
+    yield "  - stage2: 해당 pod에서 K8s API 접근 시도(컨테이너 발판 확보 흉내 - S5와 같은 시뮬레이션 한계, docstring 참고)"
+    yield from _exec_many("default", real_pod, _S59_STAGE2_EXEC_COMMANDS, "시도", container="nginx-was-logger")
+    time.sleep(2)
+
+    yield "  - stage3: 마운트된 ServiceAccount 토큰 파일 실제로 열람(여기부터 진짜 인과관계)"
+    yield from _exec_many(
+        "default", real_pod,
+        ["cat /var/run/secrets/kubernetes.io/serviceaccount/token"],
+        "토큰 열람", container="nginx-was-logger",
+    )
+    time.sleep(2)
+
+    yield "  - (부트스트랩, 체인과 무관) default SA에 관리자 권한으로 최초 토큰 발급"
+    try:
+        token = k8s.mint_sa_token("default", "default")
+    except Exception as e:
+        yield f"    실패: {e} (stage4/5 스킵)"
+        return
+
+    yield "  - stage4: 훔친 신원으로 자기 자신에게 토큰 재발급 시도(실제 K8s API 호출)"
+    yield (
+        "    "
+        + k8s.call_as_stolen_token(
+            "POST",
+            "/api/v1/namespaces/default/serviceaccounts/default/token",
+            token,
+            {"apiVersion": "authentication.k8s.io/v1", "kind": "TokenRequest", "spec": {"expirationSeconds": 600}},
+        )
+    )
+    time.sleep(2)
+
+    yield "  - stage5: 같은 신원으로 cluster-admin 권한 바인딩 시도(권한상승 시도)"
+    binding_name = f"dummy-s59-privesc-{k8s.short_id()}"
+    body = {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "ClusterRoleBinding",
+        "metadata": {"name": binding_name},
+        "subjects": [{"kind": "ServiceAccount", "name": "default", "namespace": "default"}],
+        "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "cluster-admin"},
+    }
+    yield "    " + k8s.call_as_stolen_token(
+        "POST", "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings", token, body
+    )
+
+
 def _run_s55() -> Iterator[str]:
     """S55: WAF 시그니처 단발 CRITICAL 공격 탐지 (threshold=1, network.yaml S55
     주석 참고 - WAF가 signatures.py로 이미 CRITICAL 판정을 끝낸 sqli/xss/
@@ -1410,6 +1492,16 @@ SCENARIOS: Dict[str, Dict] = {
                   "우회한다 - RBAC상 정상 부여된 권한인데도 사실상 cluster-admin급으로 승격되는 권한상승 "
                   "벡터 (threshold=1).",
         "run": _run_s58,
+    },
+    "S59": {
+        "name": "공개 웹앱 공격이 SA 토큰 탈취를 거쳐 클러스터 관리자 권한 탈취로 이어지는 정황",
+        "modules": ["waf", "falco", "k8s_audit"],
+        "story": "WAF CRITICAL 공격(1) → 그 pod에서 K8s API 접근 시도(2, 컨테이너 발판 확보 흉내) → "
+                  "마운트된 SA 토큰 실제로 탈취(3) → 그 신원으로 실제 K8s API 호출(4) → 같은 신원으로 "
+                  "cluster-admin 권한 바인딩 시도(5)까지 5단계 - WAS/WAF/Falco/k8s_audit을 하나의 "
+                  "체인으로 잇는 첫 시나리오. actor_identity 브릿지로 join_on=user_or_sa 하나가 "
+                  "5단계 내내 끊기지 않는다.",
+        "run": _run_s59,
     },
 }
 

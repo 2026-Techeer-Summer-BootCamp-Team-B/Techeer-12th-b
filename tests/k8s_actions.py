@@ -427,6 +427,36 @@ def create_service_account_token(namespace: str, sa_name: str) -> None:
     core.create_namespaced_service_account_token(sa_name, namespace, body)
 
 
+# ---- 훔친 SA 토큰으로 K8s API 직접 호출 (S59, 2026-07-19) ----
+
+def mint_sa_token(namespace: str, sa_name: str, expiration_seconds: int = 600) -> str:
+    """S59 stage4/5 재료의 부트스트랩 - 관리자 권한으로 SA에게 토큰을 하나 최초
+    발급한다. 이 호출 자체의 감사로그 행위자는 우리 admin 신원이라 S59가 노리는
+    체인(join_on=user_or_sa, actor_identity=그 SA)과는 무관한 별개 이벤트다(S25가
+    독립적으로 이 이벤트에 반응할 수는 있음, 정상). S59가 실제로 노리는 건 이렇게
+    확보한 토큰을 "그 SA 자신"이 다음 단계에서 실제로 사용하는 것이다."""
+    core, _ = _clients()
+    body = client.AuthenticationV1TokenRequest(spec=client.V1TokenRequestSpec(expiration_seconds=expiration_seconds))
+    return core.create_namespaced_service_account_token(sa_name, namespace, body).status.token
+
+
+def call_as_stolen_token(method: str, path: str, token: str, json_body: Optional[dict] = None) -> str:
+    """S59 stage4/5 재료 - 훔친 SA 토큰(mint_sa_token으로 미리 확보)으로 K8s API를
+    직접 호출한다. 대부분의 기본 SA는 자기 권한이 없어 RBAC이 막아 403이 나오지만,
+    인증 자체는 성공(유효한 토큰이라 신원은 확정됨)하므로 kube-apiserver 감사로그엔
+    이 신원(system:serviceaccount:<ns>:<sa>)이 실제로 이 행위를 시도했다는 사실이
+    그대로 남는다 - S9(익명 요청)와 같은 원칙으로, 이 시나리오가 노리는 건 "성공"이
+    아니라 "그 신원으로 그 행위를 시도했다"는 감사 이벤트 자체다."""
+    import requests
+
+    _clients()  # kubeconfig 로드 트리거(host 값 확보 목적)
+    cfg = Configuration.get_default_copy()
+    url = f"{cfg.host}{path}"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    resp = requests.request(method, url, json=json_body, headers=headers, verify=False, timeout=5)
+    return f"{method} {path} -> {resp.status_code}"
+
+
 # ---- CSR 기반 클라이언트 인증서 발급 (S57, 2026-07-18) ----
 
 def create_and_approve_csr(name: str, common_name: str) -> None:

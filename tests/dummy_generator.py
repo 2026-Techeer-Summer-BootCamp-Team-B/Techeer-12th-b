@@ -1,5 +1,5 @@
 """
-IDS-COLLECTOR 상관분석 시나리오(S1~S58, servers/correlation-engine/app/scenarios/*.yaml)를
+IDS-COLLECTOR 상관분석 시나리오(S1~S59, servers/correlation-engine/app/scenarios/*.yaml)를
 바탕으로 실제 공격/정상 트래픽을 만들어내는 더미 생성기.
 
 이 스크립트는 "가짜 로그"를 직접 만들어 넣지 않는다 - 실제 K8s API 호출(scenarios.py,
