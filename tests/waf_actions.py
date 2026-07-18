@@ -1,6 +1,7 @@
 """
-WAF(`log.source=waf`) 기반 상관분석 시나리오(S4, S5의 stage1)를 트리거하는 HTTP 요청
-빌더 + 정상(benign) 트래픽 생성기.
+WAF(`log.source=waf`) 기반 상관분석 시나리오(S4, S5의 stage1, 2026-07-18부로
+S26/S27/S28/S29/S33/S51도 추가)를 트리거하는 HTTP 요청 빌더 + 정상(benign) 트래픽
+생성기.
 
 반드시 WAF_URL(`/proxy/{path}`)을 거쳐서 보낸다 - Juice Shop(WAS_URL)로 직접 보내면
 `log.source=was`만 남고 `waf`는 안 남는다(app/proxy/proxy.py 참고). WAF는 detection
@@ -213,6 +214,88 @@ def send_random_attack(source_ip: Optional[str] = None) -> str:
     있는 시나리오에는 쓰지 않는다(threshold가 안 채워질 수 있음) - 그쪽은 계속
     send_random_critical_attack()을 쓴다."""
     return random.choice(_CRITICAL_BUILDERS + _MEDIUM_BUILDERS)(source_ip=source_ip)
+
+
+# --- S26/S27/S28/S33/S51 (2026-07-18 추가) - backend/app/middleware/gateway.py의
+# GatewayMiddleware가 판정하는 4대 탐지(Bad Bot/CORS/RateLimit/BruteForce) +
+# UA 로테이션을 재료로 하는 시나리오. 전부 threshold=1(gateway.py가 이미 자기
+# 내부 윈도우로 카운팅을 끝내고 판정까지 마친 신호라 S26~S29와 같은 논리 -
+# network.yaml S26/S27/S28/S29/S33/S51 주석 참고) - S27/S51/S26만 내부적으로
+# 여러 요청을 반복해야 gateway.py 쪽 카운터가 채워진다.
+
+def send_login_failure_via_waf(source_ip: Optional[str] = None) -> str:
+    """S26(WAF 계층 브루트포스) stage 재료 - was_actions.send_login_failure와 달리
+    반드시 /proxy를 거쳐서 gateway.py의 GatewayMiddleware(IP/계정/시스템전체 3종
+    카운터)가 직접 판정하게 한다. was_actions 쪽(S19, WAF 미경유)과는 독립적인
+    탐지 경로라는 게 이 시나리오의 취지이므로 WAF_URL이 아닌 다른 경로로 보내면
+    안 된다."""
+    return _send(
+        "POST", "rest/user/login",
+        json={"email": "dummy-nonexistent-user@example.com", "password": "wrong-password"},
+        source_ip=source_ip,
+    )
+
+
+def send_brute_force_burst_via_waf(count: int = 6) -> list:
+    """S26 재료 - gateway.py의 brute_force_max_failures(5)/brute_force_window_seconds(300)를
+    채우도록 같은 IP로 /proxy 경유 로그인 실패를 연속 전송한다(send_waf_burst와 동일 패턴)."""
+    ip = random_source_ip()
+    return [send_login_failure_via_waf(source_ip=ip) for _ in range(count)]
+
+
+def send_rate_limit_burst(count: int = 35) -> list:
+    """S27(WAF Rate Limit 남용) 재료 - gateway.py의 rate_limit_max_requests(30)/
+    rate_limit_window_seconds(60)를 넘기도록 같은 IP로 /proxy 요청을 연속 전송한다.
+    이 시나리오는 '요청 빈도' 자체가 신호라 페이로드 내용은 무관 - 시그니처에
+    안 걸리는 정상적인 조회 경로를 반복 사용한다."""
+    ip = random_source_ip()
+    return [_send("GET", "rest/products/search", params={"q": "juice"}, source_ip=ip) for _ in range(count)]
+
+
+_BAD_BOT_USER_AGENTS_SAMPLE = ["sqlmap/1.7.2", "Mozilla/5.0 (compatible; Nikto/2.5)", "masscan/1.3"]
+
+
+def send_bad_bot_request(source_ip: Optional[str] = None) -> str:
+    """S28(알려진 스캐너 툴 User-Agent 탐지) 재료 - gateway.py의
+    BAD_BOT_USER_AGENTS 목록(sqlmap/nikto/nmap/masscan/acunetix/curl/7.0/zap/burp) 중
+    하나가 User-Agent 문자열에 포함되도록 보낸다."""
+    ua = random.choice(_BAD_BOT_USER_AGENTS_SAMPLE)
+    return _send(
+        "GET", "rest/products/search", params={"q": "test"}, headers={"User-Agent": ua}, source_ip=source_ip
+    )
+
+
+def send_cors_violation_request(source_ip: Optional[str] = None) -> str:
+    """S33(CORS 위반 탐지) 재료 - gateway.py의 allowed_origins 화이트리스트(기본
+    http://localhost:5173, http://localhost:3000)에 없는 Origin을 실어 보낸다 - 다른
+    사이트(evil.example)가 피해자 브라우저를 통해 API를 몰래 호출하려는 상황 흉내."""
+    return _send(
+        "GET", "rest/products/search", params={"q": "test"},
+        headers={"Origin": "http://evil.example"}, source_ip=source_ip,
+    )
+
+
+_UA_ROTATION_POOL = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605.1.15 Firefox/121.0",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Safari/604.1",
+    "Mozilla/5.0 (compatible; Yahoo! Slurp; http://help.yahoo.com/help/us/ysearch/slurp)",
+    "msnbot/2.0b (+http://search.msn.com/msnbot.htm)",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Edge/120.0",
+]
+
+
+def send_ua_rotation_burst(source_ip: Optional[str] = None) -> list:
+    """S51(User-Agent 로테이션 탐지) 재료 - gateway.py의 record_user_agent_rotation
+    (ua_rotation_distinct_threshold=4/ua_rotation_window_seconds=60)을 채우도록 같은
+    IP로 서로 다른 User-Agent 4개를 순서대로 보낸다 - OWASP ZAP처럼 매 요청마다
+    UA를 바꿔가며 자신을 숨기는 스캐너를 흉내(S28 문자열 매칭의 사각지대,
+    network.yaml S51 주석 참고)."""
+    ip = source_ip or random_source_ip()
+    return [
+        _send("GET", "rest/products/search", params={"q": "test"}, headers={"User-Agent": ua}, source_ip=ip)
+        for ua in random.sample(_UA_ROTATION_POOL, 4)
+    ]
 
 
 # --- 정상(benign) 트래픽 - 시그니처에 안 걸리는 흔한 요청들 ---

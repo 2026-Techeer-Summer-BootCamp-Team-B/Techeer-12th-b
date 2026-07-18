@@ -1,10 +1,11 @@
 """
-K8s Audit(+Falco) 기반 상관분석 시나리오(S1~S3, S6~S18, S20/S21/S24/S25)를 실제로
-트리거하는 저수준 액션 모음. "가짜 로그를 흉내"내는 게 아니라 실제 K8s API
-호출(생성/조회/삭제)을 해서 kube-apiserver가 진짜 감사 로그를 남기게 하는 방식 -
-IDS-COLLECTOR/servers/correlation-engine/app/scenarios/*.yaml의 판정 조건과 그대로
-매칭된다. S22/S23(falco 전용)은 이 pod exec 헬퍼(exec_in_pod)만 재사용하고 여기엔
-없다 - scenarios.py에 직접 있음.
+K8s Audit(+Falco) 기반 상관분석 시나리오(S1~S3, S6~S18, S20/S21/S24/S25, S31,
+2026-07-18부로 S32/S34~S51의 falco 전용 시나리오도 이 파일의 create_sleep_pod/
+exec_in_pod을 재사용)를 실제로 트리거하는 저수준 액션 모음. "가짜 로그를 흉내"내는
+게 아니라 실제 K8s API 호출(생성/조회/삭제)을 해서 kube-apiserver가 진짜 감사
+로그를 남기게 하는 방식 - IDS-COLLECTOR/servers/correlation-engine/app/scenarios/
+*.yaml의 판정 조건과 그대로 매칭된다. S22/S23(falco 전용)은 이 pod exec
+헬퍼(exec_in_pod)만 재사용하고 여기엔 없다 - scenarios.py에 직접 있음.
 
 안전 원칙:
 - 실제 시스템 리소스(system: ClusterRole, 기존 네임스페이스 등)는 절대 건드리지 않는다.
@@ -37,6 +38,8 @@ except ImportError as e:  # pragma: no cover
 
 DUMMY_NAMESPACE = "dummy-attacks"
 BUSYBOX_IMAGE = "busybox:1.36"
+# S36(memfd_create)/S40/S44(ptrace) 전용 - create_sleep_pod() docstring 참고.
+PYTHON_IMAGE = "python:3-alpine"
 
 _core: Optional["client.CoreV1Api"] = None
 _rbac: Optional["client.RbacAuthorizationV1Api"] = None
@@ -121,11 +124,16 @@ def _ignore_404(fn, *args, **kwargs) -> None:
 
 def create_sleep_pod(namespace: str, name: str, seconds: int = 120, privileged: bool = False,
                       host_network: bool = False, host_pid: bool = False, host_ipc: bool = False,
-                      host_path_volume: bool = False) -> None:
+                      host_path_volume: bool = False, image: str = BUSYBOX_IMAGE) -> None:
     """host_pid/host_ipc/host_path_volume은 S16(audit_pod_security_flags_any)의
     privileged/host_network 외 나머지 이스케이프 벡터(hostPID, hostIPC, hostPath 마운트)를
     각각 따로도 재현할 수 있게 추가한 옵션 - 매 시나리오 실행마다 벡터를 섞어서 여러
-    조합의 로그가 나오게 하는 용도."""
+    조합의 로그가 나오게 하는 용도.
+
+    image(2026-07-18, S36/S40/S44 재료): busybox는 순수 셸 명령만으로 memfd_create/
+    ptrace 같은 raw syscall을 낼 방법이 없다(둘 다 POSIX 셸 빌트인이 아니라 C
+    라이브러리 호출이 필요) - 이 세 시나리오만 PYTHON_IMAGE(ctypes로 libc를 직접
+    호출)를 쓰고, 나머지는 기존처럼 BUSYBOX_IMAGE 그대로 쓴다."""
     core, _ = _clients()
     volumes = None
     volume_mounts = None
@@ -134,7 +142,7 @@ def create_sleep_pod(namespace: str, name: str, seconds: int = 120, privileged: 
         volume_mounts = [client.V1VolumeMount(name="hostfs", mount_path="/host-tmp")]
     container = client.V1Container(
         name="main",
-        image=BUSYBOX_IMAGE,
+        image=image,
         command=["sleep", str(seconds)],
         security_context=client.V1SecurityContext(privileged=True) if privileged else None,
         volume_mounts=volume_mounts,
@@ -208,6 +216,22 @@ def burst_list_pods(namespace: str, count: int) -> None:
     core, _ = _clients()
     for _ in range(count):
         core.list_namespaced_pod(namespace)
+
+
+def burst_list_rbac_objects(namespace: str, count: int) -> None:
+    """S31(60초 안에 roles/clusterroles/rolebindings/clusterrolebindings에 대한
+    get/list가 5회 이상, threshold=5) 재료 - burst_list_pods와 같은 패턴이지만 RBAC
+    오브젝트 4종을 돌아가며 호출해서, S10(전체 get/list/watch 대량 호출, threshold=30)과
+    구분되는 "RBAC 자체를 훑어보는" 좁은 패턴을 재현한다."""
+    _, rbac = _clients()
+    calls = [
+        rbac.list_cluster_role,
+        rbac.list_cluster_role_binding,
+        lambda: rbac.list_namespaced_role(namespace),
+        lambda: rbac.list_namespaced_role_binding(namespace),
+    ]
+    for i in range(count):
+        calls[i % len(calls)]()
 
 
 # ---- Secret ----
