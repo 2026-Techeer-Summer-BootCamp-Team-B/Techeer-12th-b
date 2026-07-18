@@ -3,7 +3,9 @@
 
 시스템의 입구를 담당하는 미들웨어.
 
-1) Bad Bot 탐지 (알려진 해킹 툴 User-Agent + User-Agent 로테이션 회피 정황)
+1) Bad Bot 탐지 (알려진 해킹 툴 User-Agent + User-Agent 로테이션 회피 정황 +
+   User-Agent 자체가 없는 요청, 2026-07-18 추가 - OWASP ZAP처럼 UA를 아예 안
+   보내는 스캐너용 보강)
 2) CORS 위반 탐지 (화이트리스트에 없는 Origin에서의 브라우저 요청)
 3) Rate Limiting 초과 탐지 (짧은 시간에 너무 많은 요청)
 4) Brute Force 탐지 — 3단계
@@ -155,6 +157,21 @@ def is_cors_protected_path(path: str) -> bool:
     return path.startswith(CORS_PROTECTED_PATH_PREFIXES)
 
 
+def is_missing_user_agent(path: str, user_agent: str) -> bool:
+    """User-Agent 헤더가 아예 없는(빈 문자열) /api,/proxy 요청인지 판단
+    (2026-07-18, OWASP ZAP baseline 스캔으로 correlation-engine 전체 시나리오를
+    재검증하다가 발견 - 실측 확인 결과 ZAP은 스파이더링 내내 User-Agent 헤더 자체를
+    안 보냈다. 이 프로젝트가 이미 갖고 있던 두 탐지 다 이걸 못 잡는다: bad_bot은
+    문자열 매칭이라 빈 값이 어떤 키워드에도 안 걸리고, ua_rotation은 빈 UA를 아예
+    카운트에서 뺀다(record_user_agent_rotation 참고, curl류 정상 트래픽 오탐 방지
+    목적이었는데 그게 그대로 ZAP의 사각지대가 됐다).
+
+    is_cors_protected_path와 같은 범위(/api, /proxy)로만 좁힌다 - 이 두 경로 밖의
+    헬스체크/모니터링/내부 서버간 호출까지 넓히면 원래 UA를 안 보내는 정상 트래픽과
+    겹쳐 오탐이 난다."""
+    return is_cors_protected_path(path) and not user_agent
+
+
 def check_cors_violation(request: Request) -> bool:
     """
     Origin 헤더를 화이트리스트(settings.allowed_origins)와 비교한다.
@@ -213,6 +230,21 @@ def _log_ua_rotation(ip: str, path: str, user_agent: str) -> None:
             user_agent=user_agent,
             matched_rule_id="ua_rotation",
             risk_level=RiskLevel.MEDIUM,
+        )
+    )
+
+
+def _log_missing_user_agent(ip: str, path: str) -> None:
+    save_log(
+        WafAlert(
+            source_ip=ip,
+            attack_type=AttackType.MISSING_USER_AGENT,
+            target_endpoint=path,
+            http_method="",
+            payload_snippet="User-Agent header missing",
+            user_agent="",
+            matched_rule_id="missing_user_agent",
+            risk_level=RiskLevel.LOW,
         )
     )
 
@@ -326,6 +358,13 @@ class GatewayMiddleware(BaseHTTPMiddleware):
         #      아니든 항상 기록한다.
         if record_user_agent_rotation(client_ip, user_agent):
             _log_ua_rotation(client_ip, request.url.path, user_agent)
+
+        # 1-3) User-Agent 자체가 없는 요청 탐지 — bad_bot(문자열 매칭)/ua_rotation(빈
+        #      UA는 카운트 제외) 둘 다 놓치는 사각지대 보강(2026-07-18, OWASP ZAP
+        #      baseline 스캔 실측 확인 - is_missing_user_agent()가 /api,/proxy로
+        #      범위를 좁혀서 판단).
+        if is_missing_user_agent(request.url.path, user_agent):
+            _log_missing_user_agent(client_ip, request.url.path)
 
         # 2) CORS 위반 탐지 — 화이트리스트에 없는 Origin에서 온 브라우저 요청을 로그로 남긴다.
         #    정적 문서(/docs)나 헬스체크는 검사 대상에서 제외 (CORS_PROTECTED_PATH_PREFIXES 참고)

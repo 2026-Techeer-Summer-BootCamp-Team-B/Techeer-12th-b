@@ -191,3 +191,72 @@ customRules:
         Cryptocurrency miner process detected (command=%proc.cmdline pid=%proc.pid container=%container.info image=%container.image.repository)
       priority: CRITICAL
       tags: [process, mitre_execution]
+
+  # 컨테이너 내부 OS 계정 생성 탐지 (2026-07-18, correlation-engine S53/T1136 재료).
+  # falcosecurity/event-generator + Atomic Red Team(T1136.001) + OWASP ZAP으로
+  # correlation-engine 전체 시나리오를 재검증하다가 발견 - useradd로 컨테이너 안에
+  # 새 Linux 계정을 만들어도(실측: `useradd -M -N -r -s /bin/sh evilbackdoor`)
+  # falcosecurity/rules 코어 falco_rules.yaml에는 대응 룰이 없다(passwd_binaries/
+  # shadowutils_binaries 리스트는 있지만 "이 바이너리가 실행되면 알림"이라는 룰 자체가
+  # 없고, "Read sensitive file untrusted"류 룰의 신뢰 프로그램 예외 목록으로만 쓰임 -
+  # 즉 코어 룰셋 관점에서는 이 바이너리들이 "정상적으로 민감 파일을 만지는 도구"로만
+  # 취급되지 "이게 실행되는 것 자체가 이상 신호"라는 관점이 없다). 이 프로젝트
+  # 워크로드(Juice Shop, WAF backend)는 전부 stateless 앱이라 정상 운영 중
+  # useradd/adduser/newusers가 실행될 이유가 없어 이 환경 전용으로 추가해도 오탐
+  # 위험이 낮다 - 일반 호스트 전체에 적용할 룰이었다면 관리자의 정상 계정 관리
+  # 작업과 겹쳐 노이즈가 컸을 것(코어 룰셋이 이 바이너리들을 "룰"로 안 만든 이유도
+  # 아마 그 오탐 때문일 것으로 추정).
+  rules-account-creation.yaml: |-
+    - list: account_creation_binaries
+      items: [useradd, adduser, newusers]
+
+    - rule: Account Creation Inside Container
+      desc: >
+        Detect creation of a new OS-level user account inside a container via
+        useradd/adduser/newusers. This project's workloads (Juice Shop, WAF
+        backend) are stateless apps with no legitimate reason to run these
+        binaries during normal operation, so execution is a strong signal of
+        backdoor account creation (MITRE T1136).
+      condition: >
+        spawned_process
+        and container
+        and proc.name in (account_creation_binaries)
+      output: >
+        OS account creation binary executed inside a container (command=%proc.cmdline pid=%proc.pid user=%user.name container=%container.info image=%container.image.repository)
+      priority: WARNING
+      tags: [process, mitre_persistence, T1136]
+      enabled: true
+
+  # ServiceAccount 토큰 파일 열람 탐지 (2026-07-18, correlation-engine S56/T1552 재료).
+  # DataDog stratus-red-team의 k8s.credential-access.steal-serviceaccount-token
+  # 기법(pod에 exec해서 `cat /var/run/secrets/kubernetes.io/serviceaccount/token`으로
+  # 마운트된 토큰을 그대로 읽어감)을 실제 클러스터에 재현하며 발견 - k8s_audit은
+  # "create pods/exec" 요청이 있었다는 것만 기록하고 그 안에서 무슨 명령을 실행했는지는
+  # 모르므로(S1의 stage1과 구분 불가), falco 쪽에서 파일 열람 자체를 봐야 한다.
+  # falcosecurity/rules 코어 falco_rules.yaml의 sensitive_files 매크로(/etc/shadow 등
+  # 전통적인 리눅스 파일 목록)에는 이 K8s 전용 경로가 없어 대응 룰이 없다(WebFetch로
+  # 원본 재확인, 2026-07-18) - S53(계정 생성)과 같은 이유로 이 프로젝트 전용 커스텀
+  # 룰이 필요했다. 이 프로젝트 워크로드(Juice Shop, WAF backend)는 애플리케이션
+  # 코드에서 K8s API를 직접 호출하지 않아 자기 자신의 SA 토큰을 읽을 정상적인 이유가
+  # 없으므로(정상 K8s client-go 기반 컨트롤러였다면 기동 시 1회 읽는 게 흔해 오탐이
+  # 컸을 것) 이 환경 전용으로 추가해도 오탐 위험이 낮다.
+  rules-token-theft.yaml: |-
+    - macro: service_account_token_file
+      condition: (fd.name endswith "kubernetes.io/serviceaccount/token")
+
+    - rule: ServiceAccount Token File Read
+      desc: >
+        Detect a process inside a container reading the mounted Kubernetes
+        ServiceAccount token file. This project's workloads (Juice Shop, WAF
+        backend) never call the K8s API from application code, so there is no
+        legitimate reason to open this file - a strong signal of an attacker
+        stealing the pod's identity to reuse it outside the pod (MITRE T1552).
+      condition: >
+        open_read
+        and container
+        and service_account_token_file
+      output: >
+        ServiceAccount token file read inside container (command=%proc.cmdline pid=%proc.pid user=%user.name container=%container.info image=%container.image.repository file=%fd.name)
+      priority: WARNING
+      tags: [filesystem, mitre_credential_access, T1552]
+      enabled: true

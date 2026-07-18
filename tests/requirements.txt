@@ -3,3 +3,4 @@ Faker
 kubernetes
 fastapi
 uvicorn[standard]
+cryptography

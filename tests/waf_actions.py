@@ -1,6 +1,6 @@
 """
 WAF(`log.source=waf`) 기반 상관분석 시나리오(S4, S5의 stage1, 2026-07-18부로
-S26/S27/S28/S29/S33/S51도 추가)를 트리거하는 HTTP 요청 빌더 + 정상(benign) 트래픽
+S26/S27/S28/S29/S33/S51/S54도 추가)를 트리거하는 HTTP 요청 빌더 + 정상(benign) 트래픽
 생성기.
 
 반드시 WAF_URL(`/proxy/{path}`)을 거쳐서 보낸다 - Juice Shop(WAS_URL)로 직접 보내면
@@ -296,6 +296,41 @@ def send_ua_rotation_burst(source_ip: Optional[str] = None) -> list:
         _send("GET", "rest/products/search", params={"q": "test"}, headers={"User-Agent": ua}, source_ip=ip)
         for ua in random.sample(_UA_ROTATION_POOL, 4)
     ]
+
+
+# --- S55 (2026-07-18 추가) - correlation-engine network.yaml S55 재료. S4/S5의
+# CRITICAL 공격 풀(_CRITICAL_BUILDERS)에는 jwt_forgery(JWT alg:none, S29 전담)도
+# 섞여 있어서 그대로 쓰면 S55가 정확히 노리는 signatures.py 기반 4종(sqli/xss/
+# os_command_injection/path_traversal)만 단발로 재현할 수가 없다 - jwt를 뺀
+# 서브셋을 별도로 노출한다.
+_INJECTION_CRITICAL_BUILDERS = [
+    send_sqli_critical,
+    send_sqli_quote_injection_critical,
+    send_xss_critical,
+    send_path_traversal_critical,
+    send_path_traversal_encoded_critical,
+    send_cmdi_critical,
+]
+
+
+def send_random_injection_critical_attack(source_ip: Optional[str] = None) -> str:
+    """S55(WAF 시그니처 단발 CRITICAL 공격 탐지) 재료 - S4(burst)/S5(falco 침투 후속)
+    없이 이 공격 딱 하나만 보내도 correlation-engine이 즉시 인시던트를 만드는지
+    확인하는 용도라, 일부러 burst나 pod exec 후속 조치 없이 단 한 번만 호출해서
+    쓴다(network.yaml S55 주석의 "단발 CRITICAL 공격" 취지)."""
+    return random.choice(_INJECTION_CRITICAL_BUILDERS)(source_ip=source_ip)
+
+
+def send_missing_user_agent_request(source_ip: Optional[str] = None) -> str:
+    """S54(User-Agent 누락 요청 탐지, 2026-07-18 추가) 재료 - gateway.py의
+    is_missing_user_agent()(/api,/proxy 요청에 User-Agent 헤더 자체가 없으면 발화)를
+    채우도록 User-Agent를 빈 문자열로 명시해서 보낸다. requests 라이브러리는 기본
+    "python-requests/x.y.z" UA를 자동으로 붙이므로, headers={"User-Agent": ""}로
+    명시적으로 덮어써야 실제로 빈 UA 헤더가 나간다 - OWASP ZAP baseline 스캔이
+    실측으로 그렇게 보내는 걸 확인했다(network.yaml S54 주석 참고)."""
+    return _send(
+        "GET", "rest/products/search", params={"q": "test"}, headers={"User-Agent": ""}, source_ip=source_ip
+    )
 
 
 # --- 정상(benign) 트래픽 - 시그니처에 안 걸리는 흔한 요청들 ---

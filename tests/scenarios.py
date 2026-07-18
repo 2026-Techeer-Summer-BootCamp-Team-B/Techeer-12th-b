@@ -1,5 +1,5 @@
 """
-IDS-COLLECTOR/servers/correlation-engine/app/scenarios/*.yaml의 S1~S51 상관분석
+IDS-COLLECTOR/servers/correlation-engine/app/scenarios/*.yaml의 S1~S58 상관분석
 시나리오를 실제로 발화시키는 레시피 모음. 각 레시피는 로그 문자열을 하나씩 yield하는
 제너레이터라 프론트엔드(dummy_ui)가 "지금 뭘 하고 있는지"를 실시간으로 보여줄 수 있다.
 
@@ -104,19 +104,30 @@ def _pipe_python(script: str) -> str:
 
 
 def _run_pod_falco_scenario(
-    prefix: str, commands: List[str], image: str = k8s.BUSYBOX_IMAGE, sleep_seconds: int = 60
+    prefix: str,
+    commands: List[str],
+    image: str = k8s.BUSYBOX_IMAGE,
+    sleep_seconds: int = 60,
+    privileged: bool = False,
 ) -> Iterator[str]:
     """join_on=pod, threshold=1인 falco 전용 시나리오(S22/S23이 먼저 쓰던 패턴을
     S32/S34~S51에서 재사용할 수 있게 공용화, 2026-07-18) - 자체 pod를 하나 만들어
     그 안에서 명령을 실행한다. pod 이름 자체가 correlation_key_value
     (orchestrator.resource.name)가 되므로 join이 항상 이 pod 하나로 확실히 매칭된다.
     각 명령이 실제로 의도한 falco 룰을 발화시키는지는 이 파일 작성 중 실제 k3d
-    클러스터(falco 파드 로그)로 실측 검증했다(모듈 docstring 참고)."""
+    클러스터(falco 파드 로그)로 실측 검증했다(모듈 docstring 참고).
+
+    privileged(S52 재료, 2026-07-18 추가): "Debugfs Launched in Privileged
+    Container"처럼 조건 자체가 container.privileged=true를 요구하는 룰은 일반
+    pod로는 절대 안 걸린다 - k8s_actions.create_sleep_pod의 privileged 옵션을
+    그대로 통과시킨다."""
     k8s.ensure_namespace()
     name = f"dummy-{prefix}-{k8s.short_id()}"
     yield from _step(
-        f"pod {name} 생성(sleep {sleep_seconds}s, image={image})",
-        lambda: k8s.create_sleep_pod(k8s.DUMMY_NAMESPACE, name, sleep_seconds, image=image),
+        f"pod {name} 생성(sleep {sleep_seconds}s, image={image}, privileged={privileged})",
+        lambda: k8s.create_sleep_pod(
+            k8s.DUMMY_NAMESPACE, name, sleep_seconds, image=image, privileged=privileged
+        ),
     )
     try:
         k8s.wait_pod_running(k8s.DUMMY_NAMESPACE, name)
@@ -870,6 +881,131 @@ def _run_s51() -> Iterator[str]:
         yield f"    {line}"
 
 
+# ============================================================================
+# S52~S53 (2026-07-18 추가) - falcosecurity/event-generator + Atomic Red Team +
+# OWASP ZAP으로 correlation-engine 전체 시나리오를 재검증하다가 발견한 두 사각지대의
+# 재현 레시피. correlation-engine/app/scenarios/workload.yaml(S52)·rbac.yaml(S53)
+# 주석 참고.
+# ============================================================================
+
+# debugfs는 alpine 기본 이미지에 없다(e2fsprogs 패키지가 debugfs 애플릿을 안 포함 -
+# 실측 확인, e2fsprogs-extra에 따로 있음) - apk로 설치한 뒤 실행한다. 이 룰
+# (falco-values.yaml customRules) 조건이 container.privileged=true를 요구해서
+# _run_pod_falco_scenario(privileged=True)로 띄운다.
+_S52_DEBUGFS_COMMAND = "apk add --no-cache e2fsprogs-extra >/dev/null 2>&1 && debugfs </dev/null 2>&1; true"
+
+
+def _run_s52() -> Iterator[str]:
+    """S52: 특권 컨테이너 내 Debugfs 실행 (threshold=1, falco "Debugfs Launched in
+    Privileged Container"). join_on=pod, privileged pod 필요."""
+    yield from _run_pod_falco_scenario(
+        "s52", [_S52_DEBUGFS_COMMAND], image=k8s.PYTHON_IMAGE, privileged=True
+    )
+
+
+# busybox 자체 adduser 애플릿으로 재현 - falco-values.yaml의 커스텀 룰
+# (account_creation_binaries = useradd/adduser/newusers)이 매칭한다.
+_S53_ACCOUNT_CREATION_COMMAND = "adduser -D -H evilbackdoor 2>&1; true"
+
+
+def _run_s53() -> Iterator[str]:
+    """S53: 컨테이너 내부 OS 계정 생성 (threshold=1, 커스텀 falco 룰 "Account
+    Creation Inside Container" - 코어 falco_rules.yaml엔 이 계열 바이너리 실행
+    자체를 알리는 룰이 없어 이 프로젝트 전용으로 추가함, falco-values.yaml 참고).
+    join_on=pod."""
+    yield from _run_pod_falco_scenario("s53", [_S53_ACCOUNT_CREATION_COMMAND])
+
+
+def _run_s54() -> Iterator[str]:
+    """S54: User-Agent 누락 요청 탐지 (threshold=1, S28/S51 사각지대 보강 -
+    OWASP ZAP baseline 스캔이 실제로 User-Agent 헤더를 아예 안 보내는 걸 실측
+    확인해서 추가함, network.yaml S54 주석 참고)."""
+    yield "  - /proxy 경유 요청에 User-Agent 헤더를 아예 안 실어 보냄 (OWASP ZAP baseline 흉내)"
+    yield f"    {waf.send_missing_user_agent_request()}"
+
+
+def _run_s56() -> Iterator[str]:
+    """S56: ServiceAccount 토큰 파일 탈취 정황 (threshold=1, falco "ServiceAccount
+    Token File Read" - Techeer-12th-b/backend/falco-values.yaml의 커스텀 룰,
+    2026-07-18 추가). S1처럼 자체 sleep pod를 하나 만들어 그 안에서 마운트된
+    자기 자신의 SA 토큰 파일을 exec으로 읽는다 - DataDog stratus-red-team의
+    k8s.credential-access.steal-serviceaccount-token과 동일 원리. join_on=pod."""
+    k8s.ensure_namespace()
+    name = f"dummy-s56-{k8s.short_id()}"
+    yield from _step(f"pod {name} 생성(sleep 60s)", lambda: k8s.create_sleep_pod(k8s.DUMMY_NAMESPACE, name, 60))
+    try:
+        k8s.wait_pod_running(k8s.DUMMY_NAMESPACE, name)
+        yield "  - pod Running 대기 -> OK"
+        yield from _step(
+            "마운트된 ServiceAccount 토큰 파일 열람(탈취 흉내)",
+            lambda: k8s.exec_in_pod(
+                k8s.DUMMY_NAMESPACE, name,
+                ["sh", "-c", "cat /var/run/secrets/kubernetes.io/serviceaccount/token"],
+            ),
+        )
+    except Exception as e:
+        yield f"  - pod Running 대기 -> 실패: {e} (exec 스킵)"
+    yield from _step(f"pod {name} 정리", lambda: k8s.delete_pod(k8s.DUMMY_NAMESPACE, name))
+
+
+def _run_s57() -> Iterator[str]:
+    """S57: CSR 기반 클라이언트 인증서 발급 정황 (threshold=1). CSR을 만들고 스스로
+    승인해서 system:kube-controller-manager 신원의 클라이언트 인증서를 발급받는다 -
+    DataDog stratus-red-team의 k8s.persistence.create-client-certificate와 동일
+    원리. join_on=user_or_sa."""
+    name = f"dummy-csr-{k8s.short_id()}"
+    yield from _step(
+        f"CSR {name} 생성+승인(system:kube-controller-manager 신원의 클라이언트 인증서 발급)",
+        lambda: k8s.create_and_approve_csr(name, "system:kube-controller-manager"),
+    )
+    yield from _step(f"CSR {name} 정리", lambda: k8s.delete_csr(name))
+
+
+def _run_s58() -> Iterator[str]:
+    """S58: nodes/proxy 권한상승 악용 정황 (threshold=1). nodes/proxy에 대한 get
+    권한만 가진 ClusterRole을 SA에 부여한 뒤, 그 SA 토큰으로 Kubelet API를 직접
+    프록시한다(어드미션 컨트롤/API 서버 로깅 우회) - DataDog stratus-red-team의
+    k8s.privilege-escalation.nodes-proxy와 동일 원리. join_on=user_or_sa(프록시를
+    실제로 호출한 SA 신원 기준)."""
+    k8s.ensure_namespace()
+    sa_name = f"dummy-np-sa-{k8s.short_id()}"
+    role_name = f"dummy-np-role-{k8s.short_id()}"
+    binding_name = f"dummy-np-binding-{k8s.short_id()}"
+    yield from _step(f"ServiceAccount {sa_name} 생성", lambda: k8s.create_service_account(k8s.DUMMY_NAMESPACE, sa_name))
+    yield from _step(
+        f"nodes/proxy get 권한만 가진 ClusterRole {role_name} 생성",
+        lambda: k8s.create_nodeproxy_clusterrole(role_name),
+    )
+    yield from _step(
+        f"ClusterRoleBinding {binding_name} 생성",
+        lambda: k8s.create_clusterrolebinding(binding_name, k8s.DUMMY_NAMESPACE, sa_name, role_name),
+    )
+    try:
+        node_name = k8s.get_any_node_name()
+        yield from _step(
+            f"{sa_name} 토큰으로 노드 {node_name}를 거쳐 Kubelet API 프록시 호출",
+            lambda: k8s.call_node_proxy(k8s.DUMMY_NAMESPACE, sa_name, node_name),
+        )
+    except Exception as e:
+        yield f"  - 노드 조회/프록시 호출 실패: {e}"
+    yield from _step(f"{binding_name} 정리", lambda: k8s.delete_clusterrolebinding(binding_name))
+    yield from _step(f"{role_name} 정리", lambda: k8s.delete_clusterrole(role_name))
+    yield from _step(f"{sa_name} 정리", lambda: k8s.delete_service_account(k8s.DUMMY_NAMESPACE, sa_name))
+
+
+def _run_s55() -> Iterator[str]:
+    """S55: WAF 시그니처 단발 CRITICAL 공격 탐지 (threshold=1, network.yaml S55
+    주석 참고 - WAF가 signatures.py로 이미 CRITICAL 판정을 끝낸 sqli/xss/
+    os_command_injection/path_traversal 공격이 S4(다발)/S5(falco 침투 후속) 조건을
+    안 채워도 correlation-engine이 예전엔 완전히 놓치던 사각지대).
+
+    일부러 S4처럼 burst로 여러 건 보내지 않고, S5처럼 뒤이어 pod exec도 하지
+    않는다 - 이 시나리오의 취지 자체가 "단 한 건, 그리고 그걸로 끝"이 상관분석
+    엔진에서 잡히는지 확인하는 것이라, 공격 하나만 딱 전송한다."""
+    yield "  - WAF 시그니처 기반 CRITICAL 공격 1건만 단독 전송 (burst도, 이어지는 pod 침투도 없음)"
+    yield f"    {waf.send_random_injection_critical_attack()}"
+
+
 SCENARIOS: Dict[str, Dict] = {
     "S1": {
         "name": "Pod Exec 권한 사용 이후 컨테이너 내 이상행동",
@@ -1218,6 +1354,62 @@ SCENARIOS: Dict[str, Dict] = {
         "story": "짧은 시간에 같은 IP가 User-Agent를 여러 개로 바꿔가며 요청한다 — OWASP ZAP처럼 매 요청마다 "
                   "정체를 숨기는 스캐너 탐지, S28(문자열 매칭)의 사각지대를 메움 (threshold=1).",
         "run": _run_s51,
+    },
+    "S52": {
+        "name": "특권 컨테이너 내 Debugfs 실행 (컨테이너 이스케이프 시도)",
+        "modules": ["falco"],
+        "story": "privileged 컨테이너 안에서 debugfs(파일시스템 디버거)를 실행한다 — 호스트 파일시스템에 "
+                  "직접 접근해 컨테이너 탈출로 이어질 수 있는 정황 (threshold=1).",
+        "run": _run_s52,
+    },
+    "S53": {
+        "name": "컨테이너 내부 OS 계정 생성 (백도어 계정 정황)",
+        "modules": ["falco"],
+        "story": "stateless 앱 컨테이너 안에서 useradd/adduser로 새 Linux 계정을 만든다 — K8s 감사로그에도 "
+                  "안 남고 코어 Falco 룰셋에도 대응 규칙이 없던 사각지대, 이 프로젝트 전용 커스텀 룰로 "
+                  "탐지 (threshold=1).",
+        "run": _run_s53,
+    },
+    "S54": {
+        "name": "User-Agent 누락 요청 탐지 (스캐너 정찰 정황)",
+        "modules": ["waf"],
+        "story": "/api,/proxy 요청에 User-Agent 헤더 자체가 없다 — OWASP ZAP baseline 스캔처럼 UA를 아예 "
+                  "안 보내는 스캐너 정찰 정황, S28(문자열 매칭)/S51(빈 UA 제외) 둘 다의 사각지대를 메움 "
+                  "(threshold=1).",
+        "run": _run_s54,
+    },
+    "S55": {
+        "name": "WAF 시그니처 단발 CRITICAL 공격 탐지 (다발/침투 없이도 즉시 발화)",
+        "modules": ["waf"],
+        "story": "WAF가 signatures.py로 이미 CRITICAL 판정을 마친 SQLi/XSS/OS Command Injection/"
+                  "Path Traversal 공격을 단 1건만 보낸다 - S4(같은 IP 5건 이상 다발)도, S5(같은 pod에서 "
+                  "falco 침투 후속)도 안 채워지는 조건이라, 지금까지는 WAF가 CRITICAL로 기록해도 "
+                  "correlation-engine이 인시던트를 하나도 안 만들던 사각지대였다 (threshold=1).",
+        "run": _run_s55,
+    },
+    "S56": {
+        "name": "ServiceAccount 토큰 파일 탈취 정황",
+        "modules": ["falco"],
+        "story": "pod 안에서 마운트된 자기 자신의 ServiceAccount 토큰 파일을 그대로 읽어간다 - 그 신원을 "
+                  "파드 밖에서 재사용하려는 자격증명 탈취 시도(threshold=1). k8s_audit만으로는 exec 안에서 "
+                  "무슨 명령을 실행했는지 알 수 없어(S1과 이벤트가 동일) 전용 falco 커스텀 룰로 잡는다.",
+        "run": _run_s56,
+    },
+    "S57": {
+        "name": "CSR 기반 클라이언트 인증서 발급 정황",
+        "modules": ["k8s_audit"],
+        "story": "CSR을 만들고 스스로 승인해서 system:kube-controller-manager처럼 이미 강력한 권한을 가진 "
+                  "내장 신원의 클라이언트 인증서를 발급받는다 - SA 토큰이 아닌 별도 인증 경로로 확보하는 "
+                  "지속성(persistence) 시도 (threshold=1).",
+        "run": _run_s57,
+    },
+    "S58": {
+        "name": "nodes/proxy 권한상승 악용 정황",
+        "modules": ["k8s_audit"],
+        "story": "nodes/proxy 권한만으로 Kubelet API를 직접 프록시해 어드미션 컨트롤과 API 서버 로깅을 "
+                  "우회한다 - RBAC상 정상 부여된 권한인데도 사실상 cluster-admin급으로 승격되는 권한상승 "
+                  "벡터 (threshold=1).",
+        "run": _run_s58,
     },
 }
 

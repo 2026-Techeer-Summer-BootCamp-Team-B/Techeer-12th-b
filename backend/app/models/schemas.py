@@ -59,6 +59,7 @@ class AttackType(str, Enum):
     BAD_BOT = "bad_bot"                        # 알려진 해킹 툴/스캐너 User-Agent
     RATE_LIMIT_ABUSE = "rate_limit_abuse"       # 짧은 시간 내 과다 요청
     UA_ROTATION = "ua_rotation"                 # 짧은 시간에 같은 IP가 User-Agent를 여러 개 바꿔씀(핑거프린팅 회피 정황)
+    MISSING_USER_AGENT = "missing_user_agent"   # /api,/proxy 요청에 User-Agent 헤더 자체가 없음(OWASP ZAP 등 스캐너가 UA를 안 보내는 정황, S28/S51의 사각지대)
 
 
 class RiskLevel(str, Enum):
