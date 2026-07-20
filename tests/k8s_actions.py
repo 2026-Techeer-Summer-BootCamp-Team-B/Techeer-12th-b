@@ -234,6 +234,26 @@ def burst_list_rbac_objects(namespace: str, count: int) -> None:
         calls[i % len(calls)]()
 
 
+def burst_list_diverse_resources(namespace: str, count: int) -> None:
+    """S105(같은 신원이 60초 안에 서로 다른 리소스 타입 5개 이상 get/list/watch,
+    cardinality distinct_field=orchestrator_resource_type) 재료 - burst_list_rbac_objects와
+    같은 패턴이지만 RBAC 4종이 아니라 pods/secrets/services/configmaps/roles 5종을
+    돌아가며 호출한다. S105의 match는 S10과 동일(resource_type 제한 없음)이라 RBAC
+    한정인 burst_list_rbac_objects로는 "타입 다양성"을 못 채운다 - 정상 컨트롤러는
+    보통 담당 타입 한둘만 반복 조회하는데, 이건 여러 타입을 폭넓게 훑는 "사람이
+    둘러보는" 정찰 정황을 재현한다."""
+    core, rbac = _clients()
+    calls = [
+        lambda: core.list_namespaced_pod(namespace),
+        lambda: core.list_namespaced_secret(namespace),
+        lambda: core.list_namespaced_service(namespace),
+        lambda: core.list_namespaced_config_map(namespace),
+        lambda: rbac.list_namespaced_role(namespace),
+    ]
+    for i in range(count):
+        calls[i % len(calls)]()
+
+
 # ---- Secret ----
 
 def create_secret(namespace: str, name: str, data: dict) -> None:
@@ -271,6 +291,37 @@ def create_configmap_with_credentials(namespace: str, name: str, data: Optional[
 
 def delete_configmap(namespace: str, name: str) -> None:
     core, _ = _clients()
+    _ignore_404(core.delete_namespaced_config_map, name, namespace)
+
+
+# ---- source_ip를 통제한 K8s API 호출 (S95, 2026-07-20 실측 확인) ----
+
+def _client_with_source_ip(source_ip: str) -> "client.CoreV1Api":
+    """S95(동일 신원의 광범위한 소스 IP 재사용 정황) 재료 - 처음엔 "k8s_audit의
+    source_ip는 kube-apiserver가 실제로 관측한 TCP 출발지라 WAF/WAS처럼
+    X-Forwarded-For로 못 바꾼다"고 가정했는데, 실제 k3d 클러스터(techeer-ids)의
+    kube-apiserver 감사로그를 직접 떠서 확인한 결과 틀렸다 - sourceIPs 필드가
+    X-Forwarded-For 값을 실제 TCP 출발지보다 앞에 그대로 싣는다(예:
+    sourceIPs=["198.51.100.77","172.19.0.3"], 2026-07-20 실측). normalizer.py의
+    `source_ips[0] if source_ips else None`이 그 첫 번째 값을 그대로 쓰므로, WAF/WAS와
+    똑같이 이 헤더 하나로 join_on=source_ip의 distinct 값을 통제할 수 있다.
+    kubernetes 파이썬 클라이언트는 호출마다 임의 헤더를 못 얹지만, ApiClient
+    생성자의 header_name/header_value로 고정 헤더 하나를 얹은 전용 클라이언트를
+    만들 수 있어 그 방식을 쓴다."""
+    _clients()
+    cfg = Configuration.get_default_copy()
+    api_client = client.ApiClient(configuration=cfg, header_name="X-Forwarded-For", header_value=source_ip)
+    return client.CoreV1Api(api_client)
+
+
+def create_configmap_with_credentials_from_ip(namespace: str, name: str, data: dict, source_ip: str) -> None:
+    core = _client_with_source_ip(source_ip)
+    cm = client.V1ConfigMap(metadata=client.V1ObjectMeta(name=name, namespace=namespace), data=data)
+    core.create_namespaced_config_map(namespace, cm)
+
+
+def delete_configmap_from_ip(namespace: str, name: str, source_ip: str) -> None:
+    core = _client_with_source_ip(source_ip)
     _ignore_404(core.delete_namespaced_config_map, name, namespace)
 
 
@@ -429,24 +480,16 @@ def create_service_account_token(namespace: str, sa_name: str) -> None:
 
 # ---- 훔친 SA 토큰으로 K8s API 직접 호출 (S59, 2026-07-19) ----
 
-def mint_sa_token(namespace: str, sa_name: str, expiration_seconds: int = 600) -> str:
-    """S59 stage4/5 재료의 부트스트랩 - 관리자 권한으로 SA에게 토큰을 하나 최초
-    발급한다. 이 호출 자체의 감사로그 행위자는 우리 admin 신원이라 S59가 노리는
-    체인(join_on=user_or_sa, actor_identity=그 SA)과는 무관한 별개 이벤트다(S25가
-    독립적으로 이 이벤트에 반응할 수는 있음, 정상). S59가 실제로 노리는 건 이렇게
-    확보한 토큰을 "그 SA 자신"이 다음 단계에서 실제로 사용하는 것이다."""
-    core, _ = _clients()
-    body = client.AuthenticationV1TokenRequest(spec=client.V1TokenRequestSpec(expiration_seconds=expiration_seconds))
-    return core.create_namespaced_service_account_token(sa_name, namespace, body).status.token
-
-
 def call_as_stolen_token(method: str, path: str, token: str, json_body: Optional[dict] = None) -> str:
-    """S59 stage4/5 재료 - 훔친 SA 토큰(mint_sa_token으로 미리 확보)으로 K8s API를
-    직접 호출한다. 대부분의 기본 SA는 자기 권한이 없어 RBAC이 막아 403이 나오지만,
-    인증 자체는 성공(유효한 토큰이라 신원은 확정됨)하므로 kube-apiserver 감사로그엔
-    이 신원(system:serviceaccount:<ns>:<sa>)이 실제로 이 행위를 시도했다는 사실이
-    그대로 남는다 - S9(익명 요청)와 같은 원칙으로, 이 시나리오가 노리는 건 "성공"이
-    아니라 "그 신원으로 그 행위를 시도했다"는 감사 이벤트 자체다."""
+    """S59 stage4/5 재료 - stage3에서 exec으로 실제로 읽어낸(훔친) SA 토큰 문자열을
+    그대로 받아 K8s API를 직접 호출한다(2026-07-19, 이전엔 별도로 새로 발급한 토큰을
+    썼는데 - "훔친 토큰 재사용"이 아니라 "같은 신원의 다른 토큰"이라 인과관계 주장이
+    정확하지 않았다 - 지금은 stage3이 읽은 값을 파라미터로 그대로 넘겨받는다).
+    대부분의 기본 SA는 자기 권한이 없어 RBAC이 막아 403이 나오지만, 인증 자체는
+    성공(유효한 토큰이라 신원은 확정됨)하므로 kube-apiserver 감사로그엔 이 신원
+    (system:serviceaccount:<ns>:<sa>)이 실제로 이 행위를 시도했다는 사실이 그대로
+    남는다 - S9(익명 요청)와 같은 원칙으로, 이 시나리오가 노리는 건 "성공"이 아니라
+    "그 신원으로 그 행위를 시도했다"는 감사 이벤트 자체다."""
     import requests
 
     _clients()  # kubeconfig 로드 트리거(host 값 확보 목적)
@@ -547,7 +590,130 @@ def call_node_proxy(sa_namespace: str, sa_name: str, node_name: str, kubelet_pat
     return f"GET {url} -> {resp.status_code}"
 
 
-# ---- 정상(benign) K8s 활동 ----
+# ---- AdmissionregistrationV1Api (S86) ----
+
+_admission: Optional["client.AdmissionregistrationV1Api"] = None
+
+
+def _admission_client() -> "client.AdmissionregistrationV1Api":
+    global _admission
+    _clients()
+    if _admission is None:
+        _admission = client.AdmissionregistrationV1Api()
+    return _admission
+
+
+# ---- NetworkPolicy (S71) ----
+
+def create_networkpolicy(namespace: str, name: str) -> None:
+    """S71(NetworkPolicy 삭제를 통한 방어 설정 무력화) 재료 - 감사 대상은 delete
+    이벤트라 여기서 만드는 정책 자체는 아무 pod에도 실제로 적용될 필요가 없다
+    (존재하지 않는 라벨을 셀렉터로 둠, S17의 create_nodeport_service와 같은 트릭)."""
+    networking = _networking_client()
+    policy = client.V1NetworkPolicy(
+        metadata=client.V1ObjectMeta(name=name, namespace=namespace),
+        spec=client.V1NetworkPolicySpec(
+            pod_selector=client.V1LabelSelector(match_labels={"app": "dummy-nonexistent"}),
+            policy_types=["Ingress"],
+        ),
+    )
+    networking.create_namespaced_network_policy(namespace, policy)
+
+
+def delete_networkpolicy(namespace: str, name: str) -> None:
+    networking = _networking_client()
+    _ignore_404(networking.delete_namespaced_network_policy, name, namespace)
+
+
+# ---- Deployment (S72) ----
+
+def create_deployment(namespace: str, name: str) -> None:
+    """S72(워크로드 삭제를 통한 서비스 중단) 재료 - match 조건이
+    orchestrator_resource_type in [deployments, statefulsets, services]라 셋 중
+    하나만 있으면 충분해서 가장 흔한 Deployment로 재현한다."""
+    apps = _apps_client()
+    container = client.V1Container(name="main", image=BUSYBOX_IMAGE, command=["sleep", "3600"])
+    template = client.V1PodTemplateSpec(
+        metadata=client.V1ObjectMeta(labels={"app": name}),
+        spec=client.V1PodSpec(containers=[container]),
+    )
+    spec = client.V1DeploymentSpec(
+        replicas=1, selector=client.V1LabelSelector(match_labels={"app": name}), template=template
+    )
+    apps.create_namespaced_deployment(namespace, client.V1Deployment(metadata=client.V1ObjectMeta(name=name, namespace=namespace), spec=spec))
+
+
+def delete_deployment(namespace: str, name: str) -> None:
+    apps = _apps_client()
+    _ignore_404(apps.delete_namespaced_deployment, name, namespace)
+
+
+# ---- MutatingWebhookConfiguration (S86) ----
+
+def create_mutating_webhook(name: str) -> None:
+    """S86(MutatingWebhookConfiguration 생성/수정을 통한 백도어 등록 탐지) 재료 -
+    존재하지 않는 서비스(dummy-nonexistent-svc)를 가리키고 failurePolicy=Ignore로
+    둬서, 실제 admission 요청이 이 웹훅 때문에 막히는 일이 없게 한다(클러스터의
+    다른 pod 생성에 부수 효과를 주지 않기 위함) - 감사 대상은 이 리소스의 create
+    요청 자체다."""
+    admission = _admission_client()
+    webhook = client.V1MutatingWebhook(
+        name=f"{name}.dummy.local",
+        client_config=client.AdmissionregistrationV1WebhookClientConfig(
+            service=client.AdmissionregistrationV1ServiceReference(
+                namespace=DUMMY_NAMESPACE, name="dummy-nonexistent-svc", path="/mutate",
+            ),
+        ),
+        rules=[client.V1RuleWithOperations(
+            api_groups=[""], api_versions=["v1"], operations=["CREATE"], resources=["pods"],
+        )],
+        admission_review_versions=["v1"],
+        side_effects="None",
+        failure_policy="Ignore",
+    )
+    config = client.V1MutatingWebhookConfiguration(metadata=client.V1ObjectMeta(name=name), webhooks=[webhook])
+    admission.create_mutating_webhook_configuration(config)
+
+
+def delete_mutating_webhook(name: str) -> None:
+    admission = _admission_client()
+    _ignore_404(admission.delete_mutating_webhook_configuration, name)
+
+
+# ---- pods/log, pods/portforward (S89/S77) ----
+
+def read_pod_log(namespace: str, name: str) -> str:
+    """S89(컨테이너 로그 조회를 통한 자격증명 유출 탐지) 재료 - get pods/log
+    자체가 감사 대상이라 로그 내용은 무관하다."""
+    core, _ = _clients()
+    return core.read_namespaced_pod_log(name, namespace)
+
+
+def call_port_forward(namespace: str, name: str, port: int = 80) -> None:
+    """S77(kubectl port-forward를 이용한 프록시 터널 구축 탐지) 재료 - falcosecurity/
+    plugins의 port-forward 룰이 정확한 verb를 명시하지 않아(network.yaml S77 주석
+    참고) create/get pods/portforward 둘 다 매치 대상인데, 이 API 호출 자체가
+    create pods/portforward 감사 이벤트를 남긴다(실제로 뭘 포워딩하는지는 무관 -
+    S9와 같은 "시도 자체가 신호" 원칙). 연결을 잠깐 열었다 바로 닫는다 - 실제
+    트래픽을 주고받을 필요가 없다."""
+    core, _ = _clients()
+    pf = stream(
+        core.connect_get_namespaced_pod_portforward,
+        name, namespace, ports=str(port), _preload_content=False,
+    )
+    try:
+        time.sleep(0.5)
+    finally:
+        pf.close()
+
+
+def burst_list_serviceaccounts(namespace: str, count: int) -> None:
+    """S79(서비스어카운트 대량 열거 탐지, threshold=10/60s) 재료 - burst_list_pods/
+    burst_list_rbac_objects와 같은 패턴."""
+    core, _ = _clients()
+    for _ in range(count):
+        core.list_namespaced_service_account(namespace)
+
 
 def _normal_k8s_actions() -> List[Tuple[str, Callable[[], None]]]:
     """평범한 운영 중 흔히 일어나는 get/list류 단발 조회만 모았다 - delete/create/
