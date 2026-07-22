@@ -19,6 +19,15 @@ spec:
       labels:
         app: otel-collector
     spec:
+      # (2026-07-22) GCP hairpin NAT 제약 때문에 CENTRAL_SIEM_OTLP_ENDPOINT 도메인이
+      # VM 자신의 공인 IP로는 dial이 안 된다(위 env 주석 참고) - 도메인 문자열은
+      # 안 바꾸고 이 파드 안에서만 그 이름의 DNS 해석을 내부 IP로 돌린다. 그러면
+      # TLS SNI/gRPC :authority 헤더 둘 다 그대로 도메인 이름을 유지해서 Traefik
+      # 라우팅과 인증서 검증이 그대로 통과하고, 실제 TCP 연결만 내부망으로 나간다.
+      hostAliases:
+        - ip: "10.178.0.2"
+          hostnames:
+            - "35-216-79-173.sslip.io"
       # otel/opentelemetry-collector-contrib 기본 이미지는 non-root(10001) 유저라
       # 호스트의 audit.log / 파드 로그 파일을 읽을 권한이 없다. Falco도 특권 모드로 도는 것과
       # 같은 이유로 root로 올린다.
@@ -44,6 +53,16 @@ spec:
             #
             # 클라이언트 인증서는 volumeMounts의 otel-client-cert(아래) 참고. exporter
             # TLS 설정은 otel-collector-config.yaml의 exporters.otlp.tls에 있다.
+            #
+            # (2026-07-22 실측 발견/수정) 이 도메인 그대로 두면 TLS는 통과하지만 dial
+            # 자체가 "i/o timeout"으로 영구 실패한다 - Target과 Central SIEM이 지금 같은
+            # GCP VM 위에서 도는데, GCP는 VM이 자신의 공인 IP로 나갔다가 되돌아오는
+            # hairpin NAT을 지원하지 않는다(호스트 자신도 `curl 35.216.79.173:4317`이
+            # 안 됨, `curl 127.0.0.1:4317`은 됨 - 실측 확인). endpoint 문자열 자체를
+            # 내부 IP로 바꾸면 TLS SNI는 아래 hostAliases로 여전히 통과해도 gRPC의
+            # HTTP/2 :authority 헤더가 IP로 나가버려 Traefik 라우팅이 안 맞고 404가
+            # 남(실측 확인) - 그래서 endpoint 문자열은 그대로 두고 hostAliases(아래)로
+            # 이 도메인 자체의 DNS 해석만 내부 IP로 돌린다.
             - name: CENTRAL_SIEM_OTLP_ENDPOINT
               value: "35-216-79-173.sslip.io:4317"
           ports:
