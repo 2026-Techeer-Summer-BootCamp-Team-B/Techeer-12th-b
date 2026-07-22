@@ -227,6 +227,42 @@ customRules:
       tags: [process, mitre_persistence, T1136]
       enabled: true
 
+  # 인터랙티브 정찰 탐지 (2026-07-22, correlation-engine S70/T1082 stage1 재료).
+  # S70이 참조하는 event_action="Basic Interactive Reconnaissance"는 falcosecurity/rules
+  # 코어 falco_rules.yaml이 아니라 sandbox 티어(falco-sandbox_rules.yaml)에만 있는
+  # 룰이라(WebFetch로 원본 재확인, 2026-07-22) - 크립토마이닝 3개 룰과 동일하게
+  # sandbox 티어에서 그대로 옮겨온다. w/whoami/id/who/uname을 인터랙티브 tty에서
+  # (proc.tty != 0) 직접 타이핑해서(proc.is_vpgid_leader=true, 스크립트/kubectl exec
+  # sh -c 실행은 해당 안 됨) 실행할 때만 발화 - 실측 확인: 이 룰이 배포 안 된 채로
+  # 있어서 S70이 구조적으로 절대 발화 불가능한 상태였다(Atomic Red Team T1082로
+  # 재현 시도 - kubectl exec sh -c 방식이라 tty가 없어 애초에 이 룰 조건과도 안
+  # 맞았음, 인터랙티브 exec -it로 재현해야 함).
+  rules-interactive-recon.yaml: |-
+    - list: recon_binaries
+      items: [w, whoami, id, who, uname]
+
+    - macro: recon_binaries_procs
+      condition: (proc.name in (recon_binaries))
+
+    - rule: Basic Interactive Reconnaissance
+      desc: >
+        This rule detects basic interactive reconnaissance commands that are typically run by unsophisticated attackers or used
+        in internal Red Team exercises. Interactive is defined as a terminal being present (proc.tty != 0). This could be any
+        form of reverse shell or usage of kubectl exec or ssh etc. In addition, filtering for the process being the process group
+        leader indicates that the command was "directly" typed into the terminal and not run as a result of a script. This rule
+        is a basic auditing or template rule. You can expand the list of reconnaissance commands, such as by adding "ls". Common
+        anti-patterns are SRE activity or debugging, but it is still worth capturing this generically. Typically, you would expect
+        other rules to fire as well in relation to this activity.
+      condition: >
+        spawned_process
+        and recon_binaries_procs
+        and proc.tty != 0
+        and proc.is_vpgid_leader=true
+      output: Basic Interactive Reconnaissance | evt_type=%evt.type user=%user.name user_uid=%user.uid user_loginuid=%user.loginuid process=%proc.name proc_exepath=%proc.exepath parent=%proc.pname command=%proc.cmdline terminal=%proc.tty exe_flags=%evt.arg.flags
+      priority: NOTICE
+      tags: [maturity_sandbox, host, container, process, mitre_reconnaissance, TA0043]
+      enabled: true
+
   # ServiceAccount 토큰 파일 열람 탐지 (2026-07-18, correlation-engine S56/T1552 재료).
   # DataDog stratus-red-team의 k8s.credential-access.steal-serviceaccount-token
   # 기법(pod에 exec해서 `cat /var/run/secrets/kubernetes.io/serviceaccount/token`으로
