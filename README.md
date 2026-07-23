@@ -24,8 +24,7 @@
 ## 📖 프로젝트 소개
 
 이 리포지토리는 "분석 대상 서버(Target)"와 "중앙 SIEM 플랫폼(Central SIEM)"으로 물리적으로
-분리된 아키텍처 중 **Target** 쪽이다. 대시보드/저장/조회는 더 이상 여기서 하지 않는다 —
-Elasticsearch, Postgres, 프론트엔드 대시보드를 모두 제거했고, 대신 클러스터 안에서 발생하는
+분리된 아키텍처 중 **Target** 쪽이다. 클러스터 안에서 발생하는
 3계층 보안 로그를 실시간으로 한곳에 모아(OTel Collector) OTLP로 Central SIEM에 흘려보내는
 역할만 한다.
 
@@ -126,13 +125,13 @@ Git / GitHub / Notion / Discord
 
 **테커 12기 Team-B**
 
-| 이름 | 역할 | 담당 업무 | 담당 파일 |
-|------|------|-----------|-----------|
-| 이용욱 | 총괄 / 게이트웨이 & 트래픽 컨트롤러 | 전체 아키텍처 총괄, 팀 조율, 웹 서버 뼈대 구축, Bad Bot 탐지, Rate Limiting/Brute Force 탐지, 에러 마스킹 | `main.py`, `app/config.py`, `app/middleware/gateway.py`, `app/proxy/proxy.py` |
-| 서동영 | 인프라 & 클러스터 관제 | k3d/Falco/OTel Collector 배포, 컨트롤 플레인(K8s Audit) 방어 | `k3d-cluster-config.yaml`, `k3d-audit-policy.yaml`, `otel-collector-*.yaml` |
-| 하지환 | 데이터 정규화 & 우회 방어 | 인코딩 디코딩, 대소문자 통일, 파라미터 오염(HPP) 방어 | `app/middleware/decoder.py` |
-| 윤재영 | 서버 & DB 보안 분석관 | SQL Injection, OS 커맨드 인젝션, 경로 탐색(Path Traversal) 방어 | `app/detection/signatures.py`(SQLi/OS Command Injection/Path Traversal), `app/detection/engine.py`(서버·DB 탐지 부분) |
-| 심다움 | 클라이언트 보안 분석관 & 로그 마스터 | XSS 방어, 악성 파일 업로드 차단, 탐지 로그의 OTel 중앙 수집 전송 | `app/detection/signatures.py`(XSS/파일 업로드), `app/detection/engine.py`(클라이언트 탐지 부분), `app/storage/log_store.py`, `app/otel/logger.py` |
+| 이름 |
+|------|
+| 이용욱 |
+| 서동영 |
+| 하지환 |
+| 윤재영 |
+| 심다움 |
 
 <br>
 
