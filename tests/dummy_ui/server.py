@@ -73,6 +73,12 @@ _MAX_LOG_ENTRIES = 5000
 _MAX_EVENTS = 2000
 _MAX_RUNS = 500
 
+# 웹 UI 자동 실행은 정지 누르는 걸 깜빡하면 무한정 공격 트래픽을 계속 만든다 -
+# CLI(--auto, Ctrl+C 전용)와 달리 여기는 상한을 강제한다(run_auto의
+# max_duration_seconds, dummy_generator.py 참고). 도달하면 자동으로 idle로
+# 돌아가고 로그에 정지 사유가 남는다.
+_AUTO_MAX_DURATION_SECONDS = 3600.0
+
 _HEADER_RE = re.compile(r"^\[(\d+)/(\d+)\] (S\d+) - (.+) \(모듈: (.+)\)$")
 _DONE_RE = re.compile(r"^\[(\d+)/(\d+)\] 완료$")
 # "=== 실행 시작... ===" / "=== 실행 종료 ===" / "--- 정지 요청 접수... ---" 류 배너 -
@@ -184,7 +190,10 @@ def _worker_manual(scenario: Optional[str], count: int, normal_per_attack: int) 
 def _worker_auto(scenario: Optional[str], attacks_per_tick: int, interval_seconds: float,
                   normal_per_attack: int, stop_event: threading.Event) -> None:
     try:
-        for line in dummy_generator.run_auto(scenario, attacks_per_tick, interval_seconds, normal_per_attack, stop_event):
+        for line in dummy_generator.run_auto(
+            scenario, attacks_per_tick, interval_seconds, normal_per_attack, stop_event,
+            max_duration_seconds=_AUTO_MAX_DURATION_SECONDS,
+        ):
             _append(line)
     except Exception as e:
         _append(f"자동 실행 중 예외로 중단됨: {e}")

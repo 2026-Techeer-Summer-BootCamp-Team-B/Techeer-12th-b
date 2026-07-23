@@ -141,28 +141,40 @@ def run_auto(
     interval_seconds: float,
     normal_per_attack: int,
     stop_event: threading.Event,
+    max_duration_seconds: Optional[float] = None,
 ) -> Iterator[str]:
     """stop_event가 set될 때까지 interval_seconds마다 attacks_per_tick개의 공격(+정상
     트래픽)을 반복 실행한다. tick 사이 대기는 0.5초 단위로 쪼개서 정지 요청에 바로
-    반응하도록 한다(interval이 길어도 정지 버튼이 몇 분씩 안 먹는 일이 없게)."""
+    반응하도록 한다(interval이 길어도 정지 버튼이 몇 분씩 안 먹는 일이 없게).
+
+    max_duration_seconds를 주면 그 시간이 지나는 순간 stop_event 없이도 스스로
+    멈춘다(None이면 기존처럼 무제한 - CLI --auto의 Ctrl+C 전용 동작은 그대로 유지,
+    dummy_ui/server.py의 웹 UI 자동 실행에만 상한을 건다)."""
     interval_seconds = max(1.0, interval_seconds)
     attacks_per_tick = max(1, min(attacks_per_tick, 20))
     tick = 0
+    start = time.monotonic()
 
-    while not stop_event.is_set():
+    def _deadline_reached() -> bool:
+        return max_duration_seconds is not None and (time.monotonic() - start) >= max_duration_seconds
+
+    while not stop_event.is_set() and not _deadline_reached():
         tick += 1
         yield f"=== 자동 실행 tick {tick}: {attacks_per_tick}개 공격, {interval_seconds}초 주기 ==="
         yield from generate(scenario, attacks_per_tick, normal_per_attack)
 
-        if stop_event.is_set():
+        if stop_event.is_set() or _deadline_reached():
             break
         waited = 0.0
-        while waited < interval_seconds and not stop_event.is_set():
+        while waited < interval_seconds and not stop_event.is_set() and not _deadline_reached():
             step = min(0.5, interval_seconds - waited)
             time.sleep(step)
             waited += step
 
-    yield f"=== 자동 실행 정지됨 (총 {tick} tick 실행) ==="
+    if _deadline_reached() and not stop_event.is_set():
+        yield f"=== 자동 실행 자동 정지됨 (최대 실행 시간 {max_duration_seconds / 3600:.0f}시간 도달, 총 {tick} tick 실행) ==="
+    else:
+        yield f"=== 자동 실행 정지됨 (총 {tick} tick 실행) ==="
 
 
 def _cli() -> None:
