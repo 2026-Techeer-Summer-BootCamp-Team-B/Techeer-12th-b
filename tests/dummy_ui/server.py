@@ -193,7 +193,7 @@ def _worker_auto(scenario: Optional[str], attacks_per_tick: int, interval_second
 
 
 class TriggerRequest(BaseModel):
-    scenario: str = "random"  # "random", "normal"(공격 없이 정상 트래픽만), 또는 "S1".."S25"
+    scenario: str = "random"  # "random", "normal"(공격 없이 정상 트래픽만), 또는 "S1".."S109"
     count: int = 1
     normal_per_attack: int = dummy_generator.DEFAULT_NORMAL_PER_ATTACK
 

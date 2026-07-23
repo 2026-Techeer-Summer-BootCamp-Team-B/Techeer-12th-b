@@ -305,7 +305,7 @@ function App() {
   const isNormalOnly = scenarioId === "normal";
   const scenarioDesc =
     scenarioId === "random"
-      ? "매 회차마다 S1~S25 중 하나를 무작위로 골라 실행합니다."
+      ? "매 회차마다 S1~S109 중 하나를 무작위로 골라 실행합니다."
       : isNormalOnly
       ? "공격 없이 WAF 정상 트래픽 + K8s 정상 조회 활동만 반복 횟수만큼 전송합니다(정상 트래픽 비율 입력란은 이 모드에서 쓰이지 않습니다)."
       : scenarioMap[scenarioId]
@@ -372,7 +372,7 @@ function App() {
           <div>
             <label htmlFor="scenario">공격 시나리오</label>
             <select id="scenario" value={scenarioId} onChange={(e) => setScenarioId(e.target.value)}>
-              <option value="random">랜덤 (S1~S25 중 무작위)</option>
+              <option value="random">랜덤 (S1~S109 중 무작위)</option>
               <option value="normal">정상 트래픽만 (공격 없음)</option>
               {scenarios.map((s) => (
                 <option key={s.id} value={s.id}>{s.id} - {s.name}</option>
